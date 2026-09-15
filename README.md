@@ -13,8 +13,7 @@ Sigue estos pasos para configurar el entorno de desarrollo en tu computadora:
 
 1. Clonar el repositorio:
    ```bash
-   git clone https://github.com
-   cd tu-repositorio
+   git clone https://github.com/GerFlo0/eventos_kommo.git
    ```
 
 2. Crear el entorno virtual:
