@@ -1,0 +1,14 @@
+
+{
+    "settings": {
+        "FECHA_DESDE": "2026-08-01",
+        "FECHA_HASTA": null,
+        "INCLUIR_LEAD_ADDED": "True",
+        "performance": {
+            "VERBOSE": "False",
+            "THREADS": 4,
+            "INCLUIR_USUARIOS": "False"
+        }
+        
+    }
+}

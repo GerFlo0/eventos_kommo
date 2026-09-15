@@ -31,25 +31,27 @@ import json
 # CONFIGURACION
 # ----------------------------------------------------------------------
 
-parameters = json.load(open("parameters.json"))
+config = json.load(open("configuration.json"))
+secret = json.load(open("secret.json"))
 
-SUBDOMAIN = parameters["kommo"]["SUBDOMAIN"]
-TOKEN = os.environ.get("KOMMO_TOKEN", parameters["kommo"]["TOKEN"])
+
+SUBDOMAIN = secret["kommo"]["SUBDOMAIN"]
+TOKEN = os.environ.get("KOMMO_TOKEN", secret["kommo"]["TOKEN"])
 
 # Filtra solo un embudo (None = todos los embudos)
-PIPELINE_ID = parameters["kommo"]["PIPELINE_ID"]
+PIPELINE_ID = secret["kommo"]["PIPELINE_ID"]
 
 # Rango de fechas. FECHA_DESDE es necesaria para poder paralelizar.
-FECHA_DESDE = parameters["settings"]["FECHA_DESDE"]   # formato YYYY-MM-DD
-FECHA_HASTA = parameters["settings"]["FECHA_HASTA"]           # None = hasta hoy
+FECHA_DESDE = config["settings"]["FECHA_DESDE"]   # formato YYYY-MM-DD
+FECHA_HASTA = config["settings"]["FECHA_HASTA"]           # None = hasta hoy
 
 # Incluir el evento de creacion del lead (da la etapa de entrada)
-INCLUIR_LEAD_ADDED = parameters["settings"]["INCLUIR_LEAD_ADDED"]
+INCLUIR_LEAD_ADDED = config["settings"]["INCLUIR_LEAD_ADDED"]
 
 # ---- Rendimiento y ruido -------------------------------------------------
-VERBOSE = parameters["settings"]["performance"]["VERBOSE"]
-HILOS = parameters["settings"]["performance"]["THREADS"]
-INCLUIR_USUARIOS = parameters["settings"]["performance"]["INCLUIR_USUARIOS"]
+VERBOSE = config["settings"]["performance"]["VERBOSE"]
+HILOS = config["settings"]["performance"]["THREADS"]
+INCLUIR_USUARIOS = config["settings"]["performance"]["INCLUIR_USUARIOS"]
 
 # Zona horaria para mostrar las fechas (Mexico centro = -6)
 TZ = timezone(timedelta(hours=-6))
