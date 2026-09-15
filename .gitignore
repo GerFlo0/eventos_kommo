@@ -1,0 +1,15 @@
+# Entorno virtual
+.venv/
+
+# Bytecode / cache de Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Archivos de configuracion
+/tablas
+secret.json
+
+test.py
+
+parameters.json
