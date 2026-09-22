@@ -1,14 +1,41 @@
-
 {
     "settings": {
-        "FECHA_DESDE": "2026-08-01",
+        "FECHA_DESDE": "2026-09-01",
         "FECHA_HASTA": null,
-        "INCLUIR_LEAD_ADDED": "True",
+        "INCLUIR_LEAD_ADDED": true,
+        "SALIDA": "historial_etapas_kommo.xlsx",
+        "ARCHIVOS_SEPARADOS": false,
+        "FILTRO_POR_ETAPA_ACTUAL": true,
+        "CAMPOS_TARJETA": [
+            "ESTATUS DE NEGOCIO",
+            "FECHA DICTAMEN"
+        ],
+        "CAMPOS_REQUERIDOS": [
+            "ESTATUS DE NEGOCIO",
+            "FECHA DICTAMEN"
+        ],
+        "EMBUDOS": [
+            {
+                "NOMBRE": "CIERRES",
+                "CLAVE_SECRET": "CIERRES",
+                "TODAS_LAS_ETAPAS": true
+            },
+            {
+                "NOMBRE": "VENTAS",
+                "CLAVE_SECRET": "VENTAS",
+                "TODAS_LAS_ETAPAS": false,
+                "ETAPAS_EXACTAS": [
+                    "SIN CAPACIDAD"
+                ],
+                "ETAPAS_CONTIENEN": [
+                    "20"
+                ]
+            }
+        ],
         "performance": {
-            "VERBOSE": "False",
+            "VERBOSE": false,
             "THREADS": 4,
-            "INCLUIR_USUARIOS": "False"
+            "INCLUIR_USUARIOS": false
         }
-        
     }
 }

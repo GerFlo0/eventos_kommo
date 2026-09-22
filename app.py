@@ -6,26 +6,48 @@ y genera un Excel con:
   - Hoja "PIVOTE":    un renglon por lead, una columna por etapa
                       con la PRIMERA fecha en que el lead entro a esa etapa
 
+Trabaja con VARIOS EMBUDOS a la vez (por defecto CIERRES + VENTAS).
+De cada embudo se puede traer todo o solo las etapas que interesen.
+
 Requisitos:
     pip install requests pandas openpyxl
 
 Uso:
     export KOMMO_TOKEN="eyJ0eXAiOi..."      # token de larga duracion
     python kommo_historial_etapas.py
+
+----------------------------------------------------------------------
+COMO CAMBIAR ENTRE "UN SOLO ARCHIVO" Y "UN ARCHIVO POR EMBUDO"
+----------------------------------------------------------------------
+En configuration.json:
+
+    "ARCHIVOS_SEPARADOS": false   ->  UN solo Excel con todo junto
+                                      (lo de VENTAS se agrega despues
+                                       de lo de CIERRES).   <-- default
+    "ARCHIVOS_SEPARADOS": true    ->  UN Excel por embudo:
+                                      historial_etapas_CIERRES.xlsx
+                                      historial_etapas_VENTAS.xlsx
+
+Es lo unico que hay que tocar; se puede ir y venir las veces que sea.
+Nota: la columna DIAS_EN_ETAPA_ANTERIOR siempre se calcula con el
+historial completo del lead (aunque haya cruzado de un embudo a otro),
+asi que da el mismo numero en los dos modos.
+----------------------------------------------------------------------
 """
 
 import os
 import sys
 import time
+import json
+import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone, timedelta
 from threading import Lock
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 
 import requests
 import pandas as pd
-import json
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 # ----------------------------------------------------------------------
 # CONFIGURACION
@@ -35,28 +57,76 @@ config = json.load(open("configuration.json"))
 secret = json.load(open("secret.json"))
 
 
+def a_bool(valor, por_defecto=False):
+    """Acepta true/false reales y tambien los textos "True"/"False".
+
+    (En JSON, "False" entre comillas es un texto y Python lo toma como
+    verdadero; este helper evita esa trampa.)
+    """
+    if valor is None:
+        return por_defecto
+    if isinstance(valor, bool):
+        return valor
+    return str(valor).strip().lower() in ("true", "1", "si", "sí", "yes", "y")
+
+
 SUBDOMAIN = secret["kommo"]["SUBDOMAIN"]
 TOKEN = os.environ.get("KOMMO_TOKEN", secret["kommo"]["TOKEN"])
 
-# Filtra solo un embudo (None = todos los embudos)
-PIPELINE_ID = secret["kommo"]["PIPELINE_ID"]
+# ---- Embudos a procesar --------------------------------------------------
+# Se definen en configuration.json -> settings.EMBUDOS (lista ordenada).
+# El primero de la lista es el embudo PRINCIPAL: manda en el orden de las
+# filas, en el orden de las columnas del pivote y en el nombre del archivo.
+EMBUDOS_CFG = config["settings"]["EMBUDOS"]
 
 # Rango de fechas. FECHA_DESDE es necesaria para poder paralelizar.
 FECHA_DESDE = config["settings"]["FECHA_DESDE"]   # formato YYYY-MM-DD
-FECHA_HASTA = config["settings"]["FECHA_HASTA"]           # None = hasta hoy
+FECHA_HASTA = config["settings"]["FECHA_HASTA"]   # None = hasta hoy
 
 # Incluir el evento de creacion del lead (da la etapa de entrada)
-INCLUIR_LEAD_ADDED = config["settings"]["INCLUIR_LEAD_ADDED"]
+INCLUIR_LEAD_ADDED = a_bool(config["settings"]["INCLUIR_LEAD_ADDED"], True)
+
+# Un solo archivo (False) o un archivo por embudo (True)
+ARCHIVOS_SEPARADOS = a_bool(config["settings"].get("ARCHIVOS_SEPARADOS"), False)
+
+# Como se decide que leads entran cuando un embudo esta filtrado por etapas:
+#   True  -> entran los leads que HOY estan parados en esas etapas, y de
+#            ellos se trae TODO su historial (recomendado / default).
+#   False -> entran solo los movimientos cuya ETAPA_NUEVA es una de esas
+#            etapas (no se consulta el estado actual del lead).
+FILTRO_POR_ETAPA_ACTUAL = a_bool(
+    config["settings"].get("FILTRO_POR_ETAPA_ACTUAL"), True)
+
+# ---- Campos de la tarjeta del lead ---------------------------------------
+# CAMPOS_TARJETA    = campos personalizados que se agregan como columnas
+#                     en la hoja HISTORIAL (se escriben tal cual aparecen
+#                     en Kommo; no importan acentos ni mayusculas).
+# CAMPOS_REQUERIDOS = de esos campos, los que el lead DEBE tener llenos
+#                     para aparecer en el reporte. Si un lead tiene vacio
+#                     alguno, se descarta completo.
+#                     Lista vacia [] = no se filtra por campos.
+# Se puede sobreescribir por embudo: basta con poner CAMPOS_REQUERIDOS
+# dentro del bloque del embudo en configuration.json (por ejemplo [] en
+# VENTAS para exigirlos solo en CIERRES).
+CAMPOS_TARJETA = list(config["settings"].get("CAMPOS_TARJETA", []))
+CAMPOS_REQUERIDOS = list(config["settings"].get("CAMPOS_REQUERIDOS", []))
+
+# Columna ETIQUETAS: las etiquetas (tags) del lead. Para no repetirlas en
+# cada renglon, solo se escriben en la fila de la FECHA MAS RECIENTE de ese
+# lead; si el lead tiene una sola fila, van en esa. Se apaga con false.
+INCLUIR_ETIQUETAS = a_bool(config["settings"].get("INCLUIR_ETIQUETAS"), True)
+COL_ETIQUETAS = "ETIQUETAS"
 
 # ---- Rendimiento y ruido -------------------------------------------------
-VERBOSE = config["settings"]["performance"]["VERBOSE"]
-HILOS = config["settings"]["performance"]["THREADS"]
-INCLUIR_USUARIOS = config["settings"]["performance"]["INCLUIR_USUARIOS"]
+VERBOSE = a_bool(config["settings"]["performance"]["VERBOSE"], False)
+HILOS = int(config["settings"]["performance"]["THREADS"])
+INCLUIR_USUARIOS = a_bool(
+    config["settings"]["performance"]["INCLUIR_USUARIOS"], False)
 
 # Zona horaria para mostrar las fechas (Mexico centro = -6)
 TZ = timezone(timedelta(hours=-6))
 
-SALIDA = "historial_etapas_kommo.xlsx"
+SALIDA = config["settings"].get("SALIDA", "historial_etapas_kommo.xlsx")
 
 BASE = f"https://{SUBDOMAIN}.kommo.com/api/v4"
 HEADERS = {"Authorization": f"Bearer {TOKEN}"}
@@ -73,12 +143,15 @@ SESSION.mount("https://", HTTPAdapter(max_retries=_retry,
                                       pool_maxsize=HILOS * 2))
 SESSION.headers.update({"User-Agent": "kommo-export/1.0"})
 
+
 def log(msg):
     if VERBOSE:
         print(msg, file=sys.stderr)
 
+
 _prog = {"req": 0, "ev": 0}
 _lock = Lock()
+
 
 def avance(n_eventos):
     with _lock:
@@ -86,8 +159,10 @@ def avance(n_eventos):
         print(f"\r {_prog['ev']} eventos",
               end="", file=sys.stderr, flush=True)
 
+
 def limpiar_avance():
     print("\r" + " " * 40 + "\r", end="", file=sys.stderr, flush=True)
+
 
 # ----------------------------------------------------------------------
 # HELPERS
@@ -97,6 +172,13 @@ def a_timestamp(fecha_str):
         return None
     return int(datetime.strptime(fecha_str, "%Y-%m-%d")
                .replace(tzinfo=TZ).timestamp())
+
+
+def normalizar(texto):
+    """MAYUSCULAS, sin acentos y sin espacios de sobra, para comparar."""
+    texto = unicodedata.normalize("NFD", str(texto))
+    texto = "".join(c for c in texto if unicodedata.category(c) != "Mn")
+    return " ".join(texto.upper().split())
 
 
 def get(url, params=None):
@@ -119,14 +201,22 @@ def get(url, params=None):
     raise RuntimeError(f"Fallaron 5 intentos en {url} — {ultimo_error}")
 
 
+# ----------------------------------------------------------------------
+# CATALOGOS
+# ----------------------------------------------------------------------
 def cargar_catalogo_etapas():
-    """Devuelve {status_id: (embudo, etapa, orden)}."""
+    """Devuelve dos mapas:
+       etapas  = {status_id: (pipeline_id, embudo, etapa, orden)}
+       embudos = {pipeline_id: nombre_del_embudo}
+    """
     data = get(f"{BASE}/leads/pipelines")
-    mapa = {}
+    etapas, embudos = {}, {}
     for pipe in data["_embedded"]["pipelines"]:
+        embudos[pipe["id"]] = pipe["name"]
         for st in pipe["_embedded"]["statuses"]:
-            mapa[st["id"]] = (pipe["name"], st["name"], st["sort"])
-    return mapa
+            etapas[st["id"]] = (pipe["id"], pipe["name"], st["name"],
+                                st["sort"])
+    return etapas, embudos
 
 
 def cargar_usuarios():
@@ -147,6 +237,197 @@ def cargar_usuarios():
     return mapa
 
 
+def resolver_embudos(etapas_cat, nombres_embudo):
+    """Arma la config de cada embudo ya con su pipeline_id y sus etapas.
+
+    Devuelve {pipeline_id: {...}} en el orden de configuration.json
+    (el primero es el principal).
+    """
+    resuelto = {}
+    for orden, emb in enumerate(EMBUDOS_CFG):
+        nombre = emb["NOMBRE"]
+
+        # El id sale de secret.json (PIPELINE_ID) o del propio config (ID)
+        if emb.get("ID"):
+            pid = int(emb["ID"])
+        else:
+            clave = emb.get("CLAVE_SECRET", nombre)
+            try:
+                pid = int(secret["kommo"]["PIPELINE_ID"][clave])
+            except KeyError:
+                sys.exit(f"ERROR: falta PIPELINE_ID['{clave}'] en secret.json")
+
+        todas = a_bool(emb.get("TODAS_LAS_ETAPAS"), False)
+
+        # Etapas que se aceptan de este embudo cuando NO se traen todas:
+        #   ETAPAS_EXACTAS    -> el nombre debe ser igual (sin acentos/mayus)
+        #   ETAPAS_CONTIENEN  -> el nombre debe contener ese texto
+        exactas = {normalizar(x) for x in emb.get("ETAPAS_EXACTAS", [])}
+        contienen = [normalizar(x) for x in emb.get("ETAPAS_CONTIENEN", [])]
+
+        etapas_ids, etapas_nombres = set(), []
+        if not todas:
+            for sid, (p_id, _emb, etapa, _orden) in etapas_cat.items():
+                if p_id != pid:
+                    continue
+                n = normalizar(etapa)
+                if n in exactas or any(c in n for c in contienen):
+                    etapas_ids.add(sid)
+                    etapas_nombres.append(etapa)
+
+        # Campos obligatorios: los del embudo si los trae, si no los globales
+        requeridos = emb.get("CAMPOS_REQUERIDOS", CAMPOS_REQUERIDOS)
+
+        resuelto[pid] = {
+            "nombre": nombre,
+            "nombre_kommo": nombres_embudo.get(pid, nombre),
+            "orden": orden,
+            "principal": orden == 0,
+            "todas": todas,
+            "etapas_ids": etapas_ids,
+            "etapas_nombres": sorted(etapas_nombres),
+            "campos_requeridos": list(requeridos),
+        }
+        if todas:
+            log(f"  {nombre} ({pid}): todas las etapas")
+        else:
+            log(f"  {nombre} ({pid}): {len(etapas_ids)} etapas -> "
+                f"{', '.join(sorted(etapas_nombres)) or 'NINGUNA'}")
+    return resuelto
+
+
+def _valor_campo(cf):
+    """Convierte un custom_fields_values de Kommo a un valor de Excel."""
+    valores = []
+    for v in (cf.get("values") or []):
+        x = v.get("value")
+        if x is None or x == "":
+            continue
+        tipo = cf.get("field_type")
+        if isinstance(x, (int, float)) and not isinstance(x, bool):
+            # las fechas de Kommo viajan como timestamp
+            if tipo in ("date", "birthday"):
+                x = datetime.fromtimestamp(x, TZ).date()
+            elif tipo == "date_time":
+                x = datetime.fromtimestamp(x, TZ).replace(tzinfo=None)
+        elif isinstance(x, bool):
+            x = "Si" if x else "No"
+        valores.append(x)
+    if not valores:
+        return None
+    if len(valores) == 1:
+        return valores[0]
+    return " | ".join(str(v) for v in valores)     # campos de opcion multiple
+
+
+def campos_pedidos():
+    """Nombres normalizados de los campos que hay que leer de la tarjeta."""
+    pedidos = set(CAMPOS_TARJETA)
+    pedidos.update(CAMPOS_REQUERIDOS)
+    for emb in EMBUDOS_CFG:
+        pedidos.update(emb.get("CAMPOS_REQUERIDOS", []))
+    return {normalizar(c) for c in pedidos}
+
+
+def cargar_tarjetas(lead_ids):
+    """Devuelve {lead_id: {"campos": {...}, "etiquetas": "a, b"}}.
+
+    Se piden en lotes de 250 con filter[id][], no uno por uno.
+    """
+    quiero = campos_pedidos()
+    tarjetas = {}
+    if (not quiero and not INCLUIR_ETIQUETAS) or not lead_ids:
+        return tarjetas
+
+    ids = sorted(lead_ids)
+    LOTE = 250
+    for i in range(0, len(ids), LOTE):
+        lote = ids[i:i + LOTE]
+        page = 1
+        while True:
+            data = get(f"{BASE}/leads",
+                       {"filter[id][]": lote, "limit": LOTE, "page": page})
+            if not data:
+                break
+            for lead in data["_embedded"]["leads"]:
+                datos = {}
+                for cf in (lead.get("custom_fields_values") or []):
+                    nombre = normalizar(cf.get("field_name") or "")
+                    if nombre in quiero:
+                        datos[nombre] = _valor_campo(cf)
+                etiquetas = [t.get("name") for t in
+                             (lead.get("_embedded") or {}).get("tags") or []
+                             if t.get("name")]
+                tarjetas[lead["id"]] = {"campos": datos,
+                                        "etiquetas": ", ".join(etiquetas)}
+            if not data.get("_links", {}).get("next"):
+                break
+            page += 1
+        log(f"  tarjetas leidas: {len(tarjetas)}/{len(ids)}")
+    return tarjetas
+
+
+def aplicar_campos(filas, tarjetas, embudos):
+    """Agrega las columnas de la tarjeta y descarta los leads incompletos."""
+    salida, descartados = [], set()
+    for fila in filas:
+        datos = tarjetas.get(fila["LEAD_ID"], {}).get("campos", {})
+        requeridos = embudos[fila["PIPELINE_ID"]]["campos_requeridos"]
+
+        faltante = any(datos.get(normalizar(c)) in (None, "")
+                       for c in requeridos)
+        if faltante:
+            descartados.add(fila["LEAD_ID"])
+            continue
+
+        for etiqueta in CAMPOS_TARJETA:
+            fila[etiqueta] = datos.get(normalizar(etiqueta))
+        salida.append(fila)
+    return salida, len(descartados)
+
+
+def marcar_etiquetas(df, etiquetas):
+    """Escribe las etiquetas SOLO en la fila mas reciente de cada lead.
+
+    Se hace por archivo, asi que si un lead sale en dos archivos, en cada
+    uno queda marcada su propia fila mas reciente.
+    """
+    df = df.copy()
+    df[COL_ETIQUETAS] = None
+    if df.empty:
+        return df
+    ultimas = df.groupby("LEAD_ID")["FECHA_HORA"].idxmax()
+    df.loc[ultimas, COL_ETIQUETAS] = [
+        etiquetas.get(lead_id) or None
+        for lead_id in df.loc[ultimas, "LEAD_ID"]]
+    return df
+
+
+def leads_en_etapas(pipeline_id, status_ids):
+    """IDs de los leads que HOY estan parados en esas etapas."""
+    ids = set()
+    if not status_ids:
+        return ids
+    page = 1
+    while True:
+        params = {"page": page, "limit": 250}
+        for i, sid in enumerate(sorted(status_ids)):
+            params[f"filter[statuses][{i}][pipeline_id]"] = pipeline_id
+            params[f"filter[statuses][{i}][status_id]"] = sid
+        data = get(f"{BASE}/leads", params)
+        if not data:
+            break
+        for lead in data["_embedded"]["leads"]:
+            ids.add(lead["id"])
+        if not data.get("_links", {}).get("next"):
+            break
+        page += 1
+    return ids
+
+
+# ----------------------------------------------------------------------
+# EVENTOS
+# ----------------------------------------------------------------------
 def _params_base():
     tipos = ["lead_status_changed"]
     if INCLUIR_LEAD_ADDED:
@@ -218,6 +499,158 @@ def extraer_status(bloque):
 
 
 # ----------------------------------------------------------------------
+# ARMADO DEL DATAFRAME
+# ----------------------------------------------------------------------
+def armar_filas(eventos, etapas, usuarios, embudos, leads_permitidos):
+    filas = []
+    for ev in eventos:
+        sid_ant, pid_ant = extraer_status(ev.get("value_before"))
+        sid_new, pid_new = extraer_status(ev.get("value_after"))
+        pipeline_id = pid_new or pid_ant
+
+        cfg = embudos.get(pipeline_id)
+        if cfg is None:          # embudo que no nos interesa
+            continue
+
+        lead_id = ev["entity_id"]
+
+        if not cfg["todas"]:
+            if FILTRO_POR_ETAPA_ACTUAL:
+                # solo leads que hoy estan en las etapas pedidas
+                if lead_id not in leads_permitidos.get(pipeline_id, set()):
+                    continue
+            else:
+                # solo los movimientos hacia las etapas pedidas
+                if sid_new not in cfg["etapas_ids"]:
+                    continue
+
+        _, _, eta_new, orden = etapas.get(sid_new, (None, "", "", 999))
+        _, _, eta_ant, _ = etapas.get(sid_ant, (None, "", "", 999))
+
+        fecha = datetime.fromtimestamp(ev["created_at"], TZ).replace(
+            tzinfo=None)
+
+        fila = {
+            "LEAD_ID": lead_id,
+            "EMBUDO": cfg["nombre_kommo"],
+            "PIPELINE_ID": pipeline_id,   # auxiliar: no se exporta
+            "ETAPA_ANTERIOR": eta_ant,
+            "ETAPA_NUEVA": eta_new,
+            "FECHA_HORA": fecha,          # auxiliar: se borra al exportar
+            "FECHA": fecha.date(),
+            "HORA": fecha.time(),
+            "TIPO_EVENTO": ev["type"],
+            "ORDEN_ETAPA": orden,
+            "ORDEN_EMBUDO": cfg["orden"],
+        }
+        if INCLUIR_USUARIOS:
+            fila["MOVIDO_POR"] = usuarios.get(ev.get("created_by"),
+                                              ev.get("created_by"))
+        filas.append(fila)
+    return filas
+
+
+def cols_historial():
+    """Orden de las columnas de la hoja HISTORIAL.
+
+    Los campos de la tarjeta (CAMPOS_TARJETA) van despues de EMBUDO,
+    porque son datos del lead y no del movimiento.
+    """
+    return (["LEAD_ID", "EMBUDO"] + list(CAMPOS_TARJETA) +
+            ([COL_ETIQUETAS] if INCLUIR_ETIQUETAS else []) +
+            ["ETAPA_ANTERIOR", "ETAPA_NUEVA", "FECHA", "HORA",
+             "TIPO_EVENTO", "MOVIDO_POR", "DIAS_EN_ETAPA_ANTERIOR"])
+
+
+def construir_df(filas):
+    df = pd.DataFrame(filas)
+
+    # Dias entre un movimiento y el siguiente del mismo lead.
+    # Se calcula SIEMPRE sobre el historial completo y en orden cronologico,
+    # aunque el lead haya cruzado de un embudo a otro.
+    df = df.sort_values(["LEAD_ID", "FECHA_HORA"])
+    df["DIAS_EN_ETAPA_ANTERIOR"] = (
+        df.groupby("LEAD_ID")["FECHA_HORA"].diff().dt.total_seconds() / 86400
+    ).round(2)
+
+    # Orden de salida: primero el embudo principal, luego los demas
+    return df.sort_values(["ORDEN_EMBUDO", "LEAD_ID", "FECHA_HORA"])
+
+
+def construir_pivote(df):
+    """Una fila por lead, una columna por etapa con la primera fecha.
+
+    Si una misma etapa existe en dos embudos (p. ej. "Logrado con exito"),
+    la columna se etiqueta "EMBUDO - ETAPA" para no mezclarlas.
+    """
+    cols = (df[["EMBUDO", "ETAPA_NUEVA", "ORDEN_EMBUDO", "ORDEN_ETAPA"]]
+            .drop_duplicates()
+            .sort_values(["ORDEN_EMBUDO", "ORDEN_ETAPA", "ETAPA_NUEVA"]))
+
+    repetidas = (cols.groupby("ETAPA_NUEVA")["EMBUDO"].nunique()
+                 .loc[lambda s: s > 1].index)
+
+    def etiqueta(embudo, etapa):
+        return f"{embudo} - {etapa}" if etapa in repetidas else etapa
+
+    df = df.copy()
+    df["ETAPA_COL"] = [etiqueta(e, t)
+                       for e, t in zip(df["EMBUDO"], df["ETAPA_NUEVA"])]
+
+    orden_cols, vistas = [], set()
+    for _, r in cols.iterrows():
+        col = etiqueta(r["EMBUDO"], r["ETAPA_NUEVA"])
+        if col not in vistas:
+            vistas.add(col)
+            orden_cols.append(col)
+
+    return (df.pivot_table(index="LEAD_ID", columns="ETAPA_COL",
+                           values="FECHA_HORA", aggfunc="min")
+              .reindex(columns=orden_cols)
+              .reset_index())
+
+
+# ----------------------------------------------------------------------
+# EXCEL
+# ----------------------------------------------------------------------
+def escribir_excel(ruta, df, etiquetas=None):
+    if INCLUIR_ETIQUETAS:
+        df = marcar_etiquetas(df, etiquetas or {})
+    historial = df[[c for c in cols_historial() if c in df.columns]]
+    pivote = construir_pivote(df)
+
+    with pd.ExcelWriter(ruta, engine="openpyxl",
+                        datetime_format="yyyy-mm-dd hh:mm:ss",
+                        date_format="yyyy-mm-dd") as xl:
+        historial.to_excel(xl, sheet_name="HISTORIAL", index=False)
+        pivote.to_excel(xl, sheet_name="PIVOTE", index=False)
+
+        for hoja, ancho in (("HISTORIAL", 22), ("PIVOTE", 20)):
+            ws = xl.sheets[hoja]
+            ws.freeze_panes = "A2"
+            for col in ws.columns:
+                ws.column_dimensions[col[0].column_letter].width = ancho
+
+        # La hora se reescribe como hora REAL de Excel (pandas la exporta
+        # como texto), asi se puede filtrar, ordenar y restar en la hoja.
+        ws = xl.sheets["HISTORIAL"]
+        if "HORA" in list(historial.columns):
+            i = list(historial.columns).index("HORA") + 1
+            for n, valor in enumerate(historial["HORA"], start=2):
+                celda = ws.cell(row=n, column=i)
+                celda.value = valor
+                celda.number_format = "hh:mm:ss"
+            ws.column_dimensions[ws.cell(row=1, column=i)
+                                 .column_letter].width = 12
+    return ruta
+
+
+def nombre_por_embudo(ruta_base, nombre_embudo):
+    raiz, ext = os.path.splitext(ruta_base)
+    return f"{raiz}_{nombre_embudo}{ext}"
+
+
+# ----------------------------------------------------------------------
 # MAIN
 # ----------------------------------------------------------------------
 def main():
@@ -227,76 +660,70 @@ def main():
     inicio = time.time()
 
     log("Cargando catalogo de embudos y etapas...")
-    etapas = cargar_catalogo_etapas()
+    etapas, nombres_embudo = cargar_catalogo_etapas()
+    embudos = resolver_embudos(etapas, nombres_embudo)
     usuarios = cargar_usuarios()
+
+    # Leads que hoy estan en las etapas pedidas (solo embudos filtrados)
+    leads_permitidos = {}
+    if FILTRO_POR_ETAPA_ACTUAL:
+        for pid, cfg in embudos.items():
+            if not cfg["todas"]:
+                leads_permitidos[pid] = leads_en_etapas(pid, cfg["etapas_ids"])
+                log(f"  {cfg['nombre']}: {len(leads_permitidos[pid])} leads "
+                    f"en las etapas pedidas")
 
     log("Descargando eventos...")
     eventos = descargar_eventos()
     if not eventos:
         sys.exit("No se encontraron eventos en el rango solicitado.")
 
-    filas = []
-    for ev in eventos:
-        sid_ant, pid_ant = extraer_status(ev.get("value_before"))
-        sid_new, pid_new = extraer_status(ev.get("value_after"))
-        pipeline_id = pid_new or pid_ant
+    filas = armar_filas(eventos, etapas, usuarios, embudos, leads_permitidos)
+    if not filas:
+        sys.exit("No hubo movimientos que cumplan los filtros configurados.")
 
-        if PIPELINE_ID and pipeline_id != PIPELINE_ID:
-            continue
+    # Datos de la tarjeta del lead (campos personalizados y etiquetas) +
+    # descarte de los que tienen vacio alguno de los CAMPOS_REQUERIDOS
+    etiquetas = {}
+    if campos_pedidos() or INCLUIR_ETIQUETAS:
+        log("Leyendo tarjetas de los leads...")
+        tarjetas = cargar_tarjetas({f["LEAD_ID"] for f in filas})
+        etiquetas = {lid: t["etiquetas"] for lid, t in tarjetas.items()}
+        filas, descartados = aplicar_campos(filas, tarjetas, embudos)
+        if descartados:
+            log(f"  {descartados} leads descartados por campos vacios")
+        if not filas:
+            sys.exit("Ningun lead tiene llenos todos los CAMPOS_REQUERIDOS "
+                     f"({', '.join(CAMPOS_REQUERIDOS) or 'sin campos'}). "
+                     "Revisa que los nombres coincidan con los de Kommo.")
 
-        emb_new, eta_new, orden = etapas.get(sid_new, ("", "", 999))
-        _, eta_ant, _ = etapas.get(sid_ant, ("", "", 999))
+    df = construir_df(filas)
 
-        fecha = datetime.fromtimestamp(ev["created_at"], TZ)
-
-        fila = {
-            "LEAD_ID": ev["entity_id"],
-            "EMBUDO": emb_new,
-            "ETAPA_ANTERIOR": eta_ant,
-            "ETAPA_NUEVA": eta_new,
-            "FECHA": fecha.replace(tzinfo=None),
-            "TIPO_EVENTO": ev["type"],
-            "ORDEN_ETAPA": orden,
-        }
-        if INCLUIR_USUARIOS:
-            fila["MOVIDO_POR"] = usuarios.get(ev.get("created_by"),
-                                              ev.get("created_by"))
-        filas.append(fila)
-
-    df = pd.DataFrame(filas).sort_values(["LEAD_ID", "FECHA"])
-
-    # Dias entre un movimiento y el siguiente del mismo lead
-    df["DIAS_EN_ETAPA_ANTERIOR"] = (
-        df.groupby("LEAD_ID")["FECHA"].diff().dt.total_seconds() / 86400
-    ).round(2)
-
-    # Pivote: primera fecha en que cada lead toco cada etapa
-    orden_cols = (df[["ETAPA_NUEVA", "ORDEN_ETAPA"]]
-                  .drop_duplicates()
-                  .sort_values("ORDEN_ETAPA")["ETAPA_NUEVA"].tolist())
-
-    pivote = (df.pivot_table(index="LEAD_ID",
-                             columns="ETAPA_NUEVA",
-                             values="FECHA",
-                             aggfunc="min")
-                .reindex(columns=orden_cols)
-                .reset_index())
-
-    with pd.ExcelWriter(SALIDA, engine="openpyxl",
-                        datetime_format="yyyy-mm-dd hh:mm:ss") as xl:
-        df.drop(columns=["ORDEN_ETAPA"]).to_excel(
-            xl, sheet_name="HISTORIAL", index=False)
-        pivote.to_excel(xl, sheet_name="PIVOTE", index=False)
-
-        for hoja, ancho in (("HISTORIAL", 22), ("PIVOTE", 20)):
-            ws = xl.sheets[hoja]
-            ws.freeze_panes = "A2"
-            for col in ws.columns:
-                ws.column_dimensions[col[0].column_letter].width = ancho
+    # ---- Salida ------------------------------------------------------
+    generados = []
+    if ARCHIVOS_SEPARADOS:
+        # Un archivo por embudo, en el orden de configuration.json
+        for pid, cfg in sorted(embudos.items(), key=lambda x: x[1]["orden"]):
+            parte = df[df["ORDEN_EMBUDO"] == cfg["orden"]]
+            if parte.empty:
+                continue
+            ruta = nombre_por_embudo(SALIDA, cfg["nombre"])
+            escribir_excel(ruta, parte, etiquetas)
+            generados.append((ruta, parte))
+    else:
+        # Todo junto: primero el embudo principal, luego los demas
+        escribir_excel(SALIDA, df, etiquetas)
+        generados.append((SALIDA, df))
 
     limpiar_avance()
-    print(f"{SALIDA} | {len(df)} movimientos | "
-          f"{df['LEAD_ID'].nunique()} leads | {time.time() - inicio:.1f}s")
+    for ruta, parte in generados:
+        print(f"{ruta} | {len(parte)} movimientos | "
+              f"{parte['LEAD_ID'].nunique()} leads")
+    resumen = " | ".join(f"{c['nombre_kommo']}: "
+                         f"{(df['ORDEN_EMBUDO'] == c['orden']).sum()}"
+                         for c in sorted(embudos.values(),
+                                         key=lambda x: x["orden"]))
+    print(f"{resumen} | {time.time() - inicio:.1f}s")
 
 
 if __name__ == "__main__":
