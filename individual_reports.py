@@ -25,7 +25,9 @@ from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.hyperlink import Hyperlink
 
 RUTA_HISTORIAL = "tablas/historial_etapas_kommo.xlsx"
-CARPETA_REPORTES = "tablas/reportes"
+CARPETA_REPORTES = "tablas/reportes/individuales"
+MESES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio",
+         "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
 
 # Columnas mínimas que debe traer el resultado de la consulta.
 COLUMNAS_REQUERIDAS = ["LEAD_ID", "ETAPA_ANTERIOR", "ETAPA_NUEVA", "FECHA"]
@@ -395,6 +397,10 @@ def escribir_excel(hojas, ruta, fecha_corte, asesor=""):
 # ---------------------------------------------------------------------------
 # Función pública
 # ---------------------------------------------------------------------------
+def _carpeta_por_fecha(carpeta_base, fecha):
+    """tablas + 23/09/2026 -> tablas/septiembre/23"""
+    return Path(carpeta_base) / MESES[fecha.month - 1] / f"{fecha.day:02d}"
+
 def _nombre_archivo(asesor):
     """'Miriam Gómez Cierres' -> 'reporte_estado_leads_miriam_gomez_cierres.xlsx'."""
     slug = re.sub(r"[^a-z0-9]+", "_", normalizar(asesor)).strip("_")
@@ -442,7 +448,7 @@ def generar_reporte_estado_leads(historial, asesor="", ruta_salida=None,
         return None
 
     fecha_corte = fecha_corte or datetime.now().replace(microsecond=0)
-    ruta_salida = Path(ruta_salida) if ruta_salida else Path(carpeta_salida) / _nombre_archivo(asesor)
+    ruta_salida = Path(ruta_salida) if ruta_salida else _carpeta_por_fecha(carpeta_salida, fecha_corte) / _nombre_archivo(asesor)
     ruta_salida.parent.mkdir(parents=True, exist_ok=True)
 
     hojas = generar_reporte(historial, fecha_corte)
