@@ -3,6 +3,7 @@
 Extrae el historial de cambios de etapa de los leads de Kommo (API v4)
 y genera un Excel con:
   - Hoja "HISTORIAL": un renglon por cada cambio de etapa
+                      (FECHA lleva fecha y hora en la misma celda)
   - Hoja "PIVOTE":    un renglon por lead, una columna por etapa
                       con la PRIMERA fecha en que el lead entro a esa etapa
 
@@ -38,7 +39,6 @@ asi que da el mismo numero en los dos modos.
 import os
 import sys
 import time
-import json
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone, timedelta
@@ -49,13 +49,14 @@ import pandas as pd
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+import functions as fn
+
 # ----------------------------------------------------------------------
 # CONFIGURACION
 # ----------------------------------------------------------------------
 
-config = json.load(open("configuration.json"))
-secret = json.load(open("secret.json"))
-
+config = fn.import_json("json/configuration.json")
+secret = fn.import_json("json/secret.json")
 
 def a_bool(valor, por_defecto=False):
     """Acepta true/false reales y tambien los textos "True"/"False".
@@ -396,7 +397,7 @@ def marcar_etiquetas(df, etiquetas):
     df[COL_ETIQUETAS] = None
     if df.empty:
         return df
-    ultimas = df.groupby("LEAD_ID")["FECHA_HORA"].idxmax()
+    ultimas = df.groupby("LEAD_ID")["FECHA"].idxmax()
     df.loc[ultimas, COL_ETIQUETAS] = [
         etiquetas.get(lead_id) or None
         for lead_id in df.loc[ultimas, "LEAD_ID"]]
@@ -536,10 +537,8 @@ def armar_filas(eventos, etapas, usuarios, embudos, leads_permitidos):
             "PIPELINE_ID": pipeline_id,   # auxiliar: no se exporta
             "ETAPA_ANTERIOR": eta_ant,
             "ETAPA_NUEVA": eta_new,
-            "FECHA_HORA": fecha,          # auxiliar: se borra al exportar
-            "FECHA": fecha.date(),
-            "HORA": fecha.time(),
-            "TIPO_EVENTO": ev["type"],
+            "FECHA": fecha,               # fecha y hora en una sola celda
+            "TIPO_EVENTO": ev["type"],    # auxiliar: no se exporta
             "ORDEN_ETAPA": orden,
             "ORDEN_EMBUDO": cfg["orden"],
         }
@@ -558,8 +557,8 @@ def cols_historial():
     """
     return (["LEAD_ID", "EMBUDO"] + list(CAMPOS_TARJETA) +
             ([COL_ETIQUETAS] if INCLUIR_ETIQUETAS else []) +
-            ["ETAPA_ANTERIOR", "ETAPA_NUEVA", "FECHA", "HORA",
-             "TIPO_EVENTO", "MOVIDO_POR", "DIAS_EN_ETAPA_ANTERIOR"])
+            ["ETAPA_ANTERIOR", "ETAPA_NUEVA", "FECHA",
+             "MOVIDO_POR", "DIAS_EN_ETAPA_ANTERIOR"])
 
 
 def construir_df(filas):
@@ -568,13 +567,13 @@ def construir_df(filas):
     # Dias entre un movimiento y el siguiente del mismo lead.
     # Se calcula SIEMPRE sobre el historial completo y en orden cronologico,
     # aunque el lead haya cruzado de un embudo a otro.
-    df = df.sort_values(["LEAD_ID", "FECHA_HORA"])
+    df = df.sort_values(["LEAD_ID", "FECHA"])
     df["DIAS_EN_ETAPA_ANTERIOR"] = (
-        df.groupby("LEAD_ID")["FECHA_HORA"].diff().dt.total_seconds() / 86400
+        df.groupby("LEAD_ID")["FECHA"].diff().dt.total_seconds() / 86400
     ).round(2)
 
     # Orden de salida: primero el embudo principal, luego los demas
-    return df.sort_values(["ORDEN_EMBUDO", "LEAD_ID", "FECHA_HORA"])
+    return df.sort_values(["ORDEN_EMBUDO", "LEAD_ID", "FECHA"])
 
 
 def construir_pivote(df):
@@ -605,7 +604,7 @@ def construir_pivote(df):
             orden_cols.append(col)
 
     return (df.pivot_table(index="LEAD_ID", columns="ETAPA_COL",
-                           values="FECHA_HORA", aggfunc="min")
+                           values="FECHA", aggfunc="min")
               .reindex(columns=orden_cols)
               .reset_index())
 
@@ -630,18 +629,6 @@ def escribir_excel(ruta, df, etiquetas=None):
             ws.freeze_panes = "A2"
             for col in ws.columns:
                 ws.column_dimensions[col[0].column_letter].width = ancho
-
-        # La hora se reescribe como hora REAL de Excel (pandas la exporta
-        # como texto), asi se puede filtrar, ordenar y restar en la hoja.
-        ws = xl.sheets["HISTORIAL"]
-        if "HORA" in list(historial.columns):
-            i = list(historial.columns).index("HORA") + 1
-            for n, valor in enumerate(historial["HORA"], start=2):
-                celda = ws.cell(row=n, column=i)
-                celda.value = valor
-                celda.number_format = "hh:mm:ss"
-            ws.column_dimensions[ws.cell(row=1, column=i)
-                                 .column_letter].width = 12
     return ruta
 
 
@@ -654,6 +641,11 @@ def nombre_por_embudo(ruta_base, nombre_embudo):
 # MAIN
 # ----------------------------------------------------------------------
 def main():
+    print(f"Kommo: {SUBDOMAIN} | Hilos: {HILOS} | Desde: {FECHA_DESDE} | "
+          f"Hasta: {FECHA_HASTA or 'hoy'} | "
+          f"Embudo principal: {EMBUDOS_CFG[0]['NOMBRE']} | "
+          f"Embudo complementario: {EMBUDOS_CFG[1]['NOMBRE'] if len(EMBUDOS_CFG) > 1 else 'NINGUNO'} | "
+          f"Archivos separados: {ARCHIVOS_SEPARADOS}")
     if not TOKEN:
         sys.exit("ERROR: falta la variable de entorno KOMMO_TOKEN")
 
