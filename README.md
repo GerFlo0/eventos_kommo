@@ -16,32 +16,7 @@ Sigue estos pasos para configurar el entorno de desarrollo en tu computadora:
    git clone https://github.com/GerFlo0/eventos_kommo.git
    ```
 
-2. Crear el entorno virtual:
-   * En Windows:
-     ```bash
-     python -m venv .venv
-     ```
-   * En macOS / Linux:
-     ```bash
-     python3 -m venv .venv
-     ```
-
-3. Activar el entorno virtual:
-   * En Windows (CMD o PowerShell):
-     ```bash
-     .venv\Scripts\activate
-     ```
-   * En macOS / Linux:
-     ```bash
-     source .venv/bin/activate
-     ```
-
-4. Instalar las dependencias:
-   Instala los paquetes necesarios listados en el archivo requirements.txt:
-   ```bash
-   pip install -r requirements.txt
-   ```
-
+2. Ejecutar setup_environment.py para crear el entorno virtual, instalar dependencias y crear rutas necesarias
 ## Uso
 
 modifica los parametros en json configuration segun tus necesidades y ejecuta el programa
