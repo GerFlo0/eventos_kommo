@@ -38,7 +38,7 @@ from individual_reports import MESES, clasificar_etapa, normalizar
 
 CARPETA_INDIVIDUALES = "tablas/reportes/individuales"
 CARPETA_GENERALES = "tablas/reportes/generales"
-PREFIJO_INDIVIDUAL = "reporte_estado_leads"
+PREFIJO_INDIVIDUAL = "reporte_individual_dictaminados"
 HOJA_ESTADO = "Estado actual"
 
 # Categoría de individual_reports.py -> columna del reporte general
@@ -346,7 +346,7 @@ def generar_reporte_general(fecha=None, carpeta_individuales=None, carpeta_salid
     else:
         carpeta_salida = Path(carpeta_salida or
                               carpeta_del_dia(fn.ruta_proyecto(CARPETA_GENERALES), fecha))
-        ruta_salida = carpeta_salida / f"reporte_general_{fecha:%Y-%m-%d}.xlsx"
+        ruta_salida = carpeta_salida / f"reporte_general_dictaminados_{fecha:%Y-%m-%d}.xlsx"
 
     if verbose:
         print(f"Leyendo reportes individuales de: {fn.ruta_para_mostrar(carpeta_individuales)}")

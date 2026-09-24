@@ -415,9 +415,9 @@ def _carpeta_por_fecha(carpeta_base, fecha):
     return Path(carpeta_base) / MESES[fecha.month - 1] / f"{fecha.day:02d}"
 
 def _nombre_archivo(asesor):
-    """'Miriam Gómez Cierres' -> 'reporte_estado_leads_miriam_gomez_cierres.xlsx'."""
+    """'Miriam Gómez Cierres' -> 'reporte_individual_dictaminados_miriam_gomez_cierres.xlsx'."""
     slug = re.sub(r"[^a-z0-9]+", "_", normalizar(asesor)).strip("_")
-    return f"reporte_estado_leads_{slug}.xlsx" if slug else "reporte_estado_leads.xlsx"
+    return f"reporte_individual_dictaminados_{slug}.xlsx" if slug else "reporte_individual_dictaminados.xlsx"
 
 
 def generar_reporte_estado_leads(historial, asesor="", ruta_salida=None,
