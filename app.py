@@ -23,7 +23,7 @@ import duckdb as db
 import pandas as pd
 
 import functions as fn
-from general_report import (CARPETA_INDIVIDUALES, PREFIJO_INDIVIDUAL,
+from general_report import (CARPETA_INDIVIDUALES, NOMBRE_ARCHIVO_GENERAL, PREFIJO_INDIVIDUAL,
                             carpeta_del_dia, generar_reporte_general)
 from individual_reports import generar_reporte_estado_leads, normalizar
 
@@ -311,7 +311,8 @@ class App(tk.Tk):
         """Muestra cómo quedará el nombre de los archivos."""
         nombres = (
             (self.prefijo_individual, self.vista_individual, f"{PREFIJO_INDIVIDUAL}_<asesor>.xlsx"),
-            (self.prefijo_general, self.vista_general, f"reporte_general_{self.fecha:%Y-%m-%d}.xlsx"),
+            (self.prefijo_general, self.vista_general,
+            f"{NOMBRE_ARCHIVO_GENERAL}_{self.fecha:%Y-%m-%d}.xlsx"),
         )
         for variable, vista, nombre in nombres:
             try:

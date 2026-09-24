@@ -62,6 +62,9 @@ _MAPA_ETAPAS = {alias: cat for cat, aliases in CATEGORIAS for alias in aliases}
 
 FORMATO_FECHA = "dd/mm/yyyy hh:mm"
 FORMATO_SOLO_FECHA = "dd/mm/yyyy"
+# Nombre base de los archivos: <prefijo><NOMBRE_ARCHIVO_INDIVIDUAL>_<asesor>.xlsx.
+# general_report.py y app.py lo importan de aquí; para renombrar, cambiarlo solo aquí.
+NOMBRE_ARCHIVO_INDIVIDUAL = "reporte_individual_dictaminados"
 FUENTE = "Arial"
 
 
@@ -429,13 +432,13 @@ def _carpeta_por_fecha(carpeta_base, fecha):
     return Path(carpeta_base) / MESES[fecha.month - 1] / f"{fecha.day:02d}"
 
 def _nombre_archivo(asesor, prefijo=""):
-    """'Miriam Gómez Cierres' -> 'reporte_estado_leads_miriam_gomez_cierres.xlsx'.
+    """'Ana Prueba' -> 'reporte_individual_dictaminados_ana_prueba.xlsx'.
 
-    El prefijo, si se indica, va al inicio: 'ENERO_reporte_estado_leads_...'.
+    El prefijo, si se indica, va al inicio: 'ENERO_reporte_individual_dictaminados_...'.
     """
     slug = re.sub(r"[^a-z0-9]+", "_", normalizar(asesor)).strip("_")
-    nombre = f"reporte_estado_leads_{slug}.xlsx" if slug else "reporte_estado_leads.xlsx"
-    return f"{prefijo}{nombre}"
+    nombre = f"{NOMBRE_ARCHIVO_INDIVIDUAL}_{slug}" if slug else NOMBRE_ARCHIVO_INDIVIDUAL
+    return f"{prefijo}{nombre}.xlsx"
 
 
 def generar_reporte_estado_leads(historial, asesor="", ruta_salida=None,
@@ -453,7 +456,7 @@ def generar_reporte_estado_leads(historial, asesor="", ruta_salida=None,
         Nombre del asesor. Se muestra en el Resumen y se usa para nombrar el archivo.
     ruta_salida : str o Path, opcional
         Ruta completa del Excel. Si no se indica, se usa
-        <carpeta_salida>/<mes>/<día>/reporte_estado_leads_<asesor>.xlsx.
+        <carpeta_salida>/<mes>/<día>/reporte_individual_dictaminados_<asesor>.xlsx.
     fecha_corte : datetime, opcional
         Fecha contra la que se calcula el tiempo transcurrido. Por defecto, ahora.
         Útil para que todos los reportes de una misma corrida usen la misma fecha.
