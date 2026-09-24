@@ -122,7 +122,7 @@ def generar_reportes(df, secret, fecha, descripcion=""):
     con = db.connect()
     con.register("df", df)   # la consulta de secret.json lee la tabla "df"
     try:
-        for asesor in secret["people"]["sin_financiera_restringida"]:
+        for asesor in secret["asesores"]:
             resultado = con.execute(secret["query"], [f"%{asesor}%"]).df()
             ruta = generar_reporte_estado_leads(
                 resultado, asesor=asesor, fecha_corte=fecha_corte,

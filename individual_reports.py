@@ -486,7 +486,7 @@ def generar_reporte_estado_leads(historial, asesor="", ruta_salida=None,
 # ---------------------------------------------------------------------------
 def main():
     labels = fn.import_json("json/secret.json")
-    asesor = labels["people"]["sin_financiera_restringida"][0]  # primer asesor de la lista
+    asesor = labels["asesores"][0]  # primer asesor de la lista
 
     df = fn.import_xlsx(RUTA_HISTORIAL)
     historial = filtrar_por_etiqueta(df, asesor)

@@ -38,6 +38,71 @@ REQUIRED_FOLDERS = [
     "tablas/reportes/generales"
 ]
 
+REQUIRED_FILES = [
+    "json/secret.json",
+]
+
+REQUIRED_FILES_CONTENT = {
+    "json/secret.json": """
+{
+    "kommo": {
+        "TOKEN": "tu_token_de_kommo",
+        "SUBDOMAIN": "tu_subdominio_de_kommo",
+        "PIPELINE_ID": {
+            "VENTAS": 0,
+            "CIERRES": 0
+        }
+    },
+    "asesores": [
+            "MIRIAM GOMEZ CIERRES",
+            "KARINA MATA CIERRES",
+            "ANA VILLEGAS CIERRES",
+            "EDNA RODRIGUEZ CIERRES",
+            "CARRANZA SARDINA CIERRES",
+            "MARISOL HERNANDEZ CIERRES",
+            "CAROLINA RAMIREZ CIERRES",
+            "HANIA GARCIA CIERRES",
+            "PAOLA RODRIGUEZ CIERRES",
+            "GLORIA ORTIZ CIERRES",
+            "IRASEMA GUTIERREZ CIERRES",
+            "ANDRE TREVIÑO CIERRES",
+            "HECTOR RODRIGUEZ CIERRES",
+            "ITZELH GONZALEZ CIERRES",
+            "DANIELA IRACHETA CIERRES",
+            "DANIELLY RODRIGUEZ CIERRES",
+            "DULCE FRANCO CIERRES",
+            "FERNANDA CASTILLO CIERRES",
+            "GABRIELA SANCHEZ CIERRES",
+            "LIDIA GARZA CIERRES",
+            "MAGALI HERNANDEZ CIERRES",
+            "MAYTE NAVARRO CIERRES"
+        ]
+    ,
+    "stages": {
+        "ventas":{
+            "Sin capacidad": "89344779"
+        },
+        "cierres":{
+            "Ganados": "",
+            "Oferta": "",
+            "Oferta en Espera": "",
+            "Documentación": "",
+            "Capturado": "",
+            "Lead Perdido": ""
+        }
+        
+    },
+    "query": "SELECT * FROM df WHERE LEAD_ID IN (SELECT LEAD_ID FROM df WHERE ETIQUETAS LIKE $1)",
+    "estatus_negocio": [
+        "COMPRA DE DEUDA MENOR A 40K",
+        "COMPRA DE DEUDA MAYOR A 40K",
+        "CREDITO NUEVO MENOR A 40K",
+        "FINANCIERA RESTRINGIDA (CONSUBANCO)",
+        "CREDITO NUEVO MAYOR  A 40K"
+        ]
+}
+"""
+}
 # Versión mínima de Python requerida
 MIN_PYTHON = (3, 14)
 
@@ -123,6 +188,19 @@ def create_folders() -> None:
             log(f"  creada:    {folder}")
 
 
+def create_files() -> None:
+    log("Creando archivos de configuración necesarios ...")
+    for file_name in REQUIRED_FILES:
+        path = PROJECT_ROOT / file_name
+        if path.exists():
+            log(f"  ya existe: {file_name}")
+            continue
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(REQUIRED_FILES_CONTENT[file_name], encoding="utf-8")
+        log(f"  creado:    {file_name}")
+
+
 def print_activation_hint() -> None:
     if os.name == "nt":
         activate = f"{VENV_DIR_NAME}\\Scripts\\activate"
@@ -147,7 +225,6 @@ def parse_args() -> argparse.Namespace:
     )
     return parser.parse_args()
 
-
 def main() -> None:
     args = parse_args()
     check_python_version()
@@ -159,6 +236,7 @@ def main() -> None:
         install_requirements()
 
     create_folders()
+    create_files()
     print_activation_hint()
 
 

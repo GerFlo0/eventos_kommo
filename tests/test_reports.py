@@ -149,7 +149,7 @@ class TestApp(unittest.TestCase):
                 return original(*args, carpeta_salida=Path(tmp) / "rep", **kwargs)
 
             secret = dict(SECRET)
-            secret["people"] = {"sin_financiera_restringida": ASESORES + ["NADIE"]}
+            secret["asesores"] = ASESORES + ["NADIE"]
             with mock.patch.object(app.fn, "import_json", return_value=secret), \
                     mock.patch.object(app.fn, "import_xlsx", return_value=historial), \
                     mock.patch.object(app, "generar_reporte_estado_leads", side_effect=en_tmp), \

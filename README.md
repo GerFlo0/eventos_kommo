@@ -22,7 +22,7 @@ Descarga los eventos de cambio de etapa de los leads de Kommo en un rango de fec
 ```
    Al terminar, el script indica cómo activar el entorno virtual.
 
-3. Crear `json/secret.json` (no se sube al repositorio). Estructura esperada, con valores de ejemplo:
+3. `setup_invironment.py` crea `json/secret.json` (no se sube al repositorio) con valores genéricos. Reemplaza los valores de `kommo`, la lista de `asesores` y el resto de la configuración con los datos de tu cuenta:
 ```json
    {
        "kommo": {
@@ -33,9 +33,7 @@ Descarga los eventos de cambio de etapa de los leads de Kommo en un rango de fec
                "VENTAS": 7654321
            }
        },
-       "people": {
-           "sin_financiera_restringida": ["NOMBRE ASESOR 1", "NOMBRE ASESOR 2"]
-       },
+         "asesores": ["NOMBRE ASESOR 1", "NOMBRE ASESOR 2"],
        "estatus_negocio": ["ESTATUS 1", "ESTATUS 2"],
        "query": "SELECT * FROM df WHERE LEAD_ID IN (SELECT LEAD_ID FROM df WHERE ETIQUETAS ILIKE $1)"
    }

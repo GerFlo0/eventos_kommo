@@ -20,7 +20,7 @@ ASESORES = ["ASESOR UNO CIERRES", "ANA PRUEBA CIERRES", "JULIANA PRUEBA CIERRES"
 SECRET = {
     "kommo": {"SUBDOMAIN": "demo", "TOKEN": "tok-secret",
               "PIPELINE_ID": {"CIERRES": fake_kommo.CIERRES, "VENTAS": fake_kommo.VENTAS}},
-    "people": {"sin_financiera_restringida": ASESORES},
+    "asesores": ASESORES,
     "query": "SELECT * FROM df WHERE LEAD_ID IN "
              "(SELECT LEAD_ID FROM df WHERE ETIQUETAS ILIKE $1)",
 }
