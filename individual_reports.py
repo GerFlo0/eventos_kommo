@@ -3,12 +3,13 @@ Reporte de estado actual e historial de leads de Kommo.
 
 Uso desde otro script:
 
-    from reporte_estado_leads import generar_reporte_estado_leads
+    from individual_reports import generar_reporte_estado_leads
 
-    generar_reporte_estado_leads(resultado_df, asesor="MIRIAM GOMEZ CIERRES")
+    generar_reporte_estado_leads(resultado_df, asesor="NOMBRE DEL ASESOR")
 
-`resultado_df` es el resultado de la consulta (el mismo contenido de result.xlsx):
-el historial de etapas de los leads del asesor. También acepta la ruta a un .xlsx.
+`resultado_df` es el resultado de la consulta: el historial de etapas de los
+leads del asesor (filas de historial_etapas_kommo.xlsx). También acepta la
+ruta a un .xlsx.
 
 El reporte incluye tres hojas: Historial por lead, Resumen y Estado actual.
 """
@@ -20,6 +21,8 @@ from pathlib import Path
 
 import duckdb as db
 import pandas as pd
+
+import functions as fn
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.hyperlink import Hyperlink
@@ -38,15 +41,20 @@ COLUMNAS_OPCIONALES = ["DIAS_EN_ETAPA_ANTERIOR", "ETIQUETAS"]
 # Cada categoría se detecta comparando ETAPA_NUEVA sin mayúsculas ni acentos
 # contra la lista de nombres equivalentes.
 CATEGORIAS = [
-    ("Logrado con éxito", ["logrado con exito"]),
+    ("Logrado con éxito", ["logrado con exito", "otorgado"]),
     ("Oferta", ["oferta"]),
     ("Oferta en espera", ["oferta en espera"]),
     ("Documentación", ["documentacion"]),
     ("Capturado", ["capturado"]),
-    ("Venta perdida", ["venta perdida", "ventas perdidas", "ventas perdidos"]),
+    ("Venta perdida", ["venta perdida", "ventas perdidas", "ventas perdidos",
+                       "lead perdido", "leads perdidos"]),
     ("Sin capacidad", ["sin capacidad"]),
 ]
-CATEGORIA_FUTURO = "Dejado a futuro"   # etapas que contienen "20" (2025, 2026...)
+CATEGORIA_FUTURO = "Dejado a futuro"   # etapas cuyo nombre contiene un año (2025, 2026...)
+# Un año de 4 dígitos que empieza con 20 y no forma parte de un número más
+# largo. Antes bastaba con contener "20", y etapas como "OFERTA 20%" o
+# "Llamar en 20 días" se clasificaban por error como "Dejado a futuro".
+PATRON_FUTURO = re.compile(r"(?<!\d)20\d{2}(?!\d)")
 CATEGORIA_OTROS = "Otros"              # cualquier etapa no contemplada arriba
 ORDEN_CATEGORIAS = [c for c, _ in CATEGORIAS] + [CATEGORIA_FUTURO, CATEGORIA_OTROS]
 
@@ -71,7 +79,7 @@ def normalizar(texto):
 def clasificar_etapa(etapa):
     """Devuelve la categoría de estado actual para una etapa de Kommo."""
     etapa_norm = normalizar(etapa)
-    if "20" in etapa_norm:
+    if PATRON_FUTURO.search(etapa_norm):
         return CATEGORIA_FUTURO
     return _MAPA_ETAPAS.get(etapa_norm, CATEGORIA_OTROS)
 
@@ -373,7 +381,7 @@ def escribir_excel(hojas, ruta, fecha_corte, asesor=""):
         ws.cell(row=nota, column=1, value="Notas:").font = Font(name=FUENTE, bold=True)
         notas = [
             "El tiempo transcurrido se calcula desde la última actualización de etapa hasta la fecha de corte (momento en que se generó el reporte).",
-            "'Dejado a futuro' agrupa las etapas cuyo nombre contiene '20' (p. ej. 2025 o 2026).",
+            "'Dejado a futuro' agrupa las etapas cuyo nombre contiene un año (p. ej. 2025 o 2026).",
             "'Otros' agrupa etapas no contempladas en la clasificación; revisarlas si aparecen.",
             "En 'Historial por lead', los días en la etapa nueva del último cambio se cuentan hasta la fecha de corte.",
         ]
@@ -408,7 +416,7 @@ def _nombre_archivo(asesor):
 
 
 def generar_reporte_estado_leads(historial, asesor="", ruta_salida=None,
-                                 fecha_corte=None, carpeta_salida=CARPETA_REPORTES,
+                                 fecha_corte=None, carpeta_salida=None,
                                  verbose=True):
     """
     Genera el reporte de estado actual e historial de leads en Excel.
@@ -422,12 +430,14 @@ def generar_reporte_estado_leads(historial, asesor="", ruta_salida=None,
         Nombre del asesor. Se muestra en el Resumen y se usa para nombrar el archivo.
     ruta_salida : str o Path, opcional
         Ruta completa del Excel. Si no se indica, se usa
-        <carpeta_salida>/reporte_estado_leads_<asesor>.xlsx.
+        <carpeta_salida>/<mes>/<día>/reporte_estado_leads_<asesor>.xlsx.
     fecha_corte : datetime, opcional
         Fecha contra la que se calcula el tiempo transcurrido. Por defecto, ahora.
         Útil para que todos los reportes de una misma corrida usen la misma fecha.
-    carpeta_salida : str o Path
+    carpeta_salida : str o Path, opcional
         Carpeta donde se guarda el reporte cuando no se indica ruta_salida.
+        Por defecto, tablas/reportes/individuales dentro del proyecto; el
+        reporte queda en <carpeta_salida>/<mes>/<día>/.
     verbose : bool
         Si es True, imprime un resumen en consola.
 
@@ -448,6 +458,8 @@ def generar_reporte_estado_leads(historial, asesor="", ruta_salida=None,
         return None
 
     fecha_corte = fecha_corte or datetime.now().replace(microsecond=0)
+    if carpeta_salida is None:
+        carpeta_salida = fn.ruta_proyecto(CARPETA_REPORTES)
     ruta_salida = Path(ruta_salida) if ruta_salida else _carpeta_por_fecha(carpeta_salida, fecha_corte) / _nombre_archivo(asesor)
     ruta_salida.parent.mkdir(parents=True, exist_ok=True)
 
@@ -455,7 +467,7 @@ def generar_reporte_estado_leads(historial, asesor="", ruta_salida=None,
     escribir_excel(hojas, ruta_salida, fecha_corte, asesor)
 
     if verbose:
-        print(f"[{asesor or 'sin asesor'}] Reporte generado: {ruta_salida} "
+        print(f"[{asesor or 'sin asesor'}] Reporte generado: {fn.ruta_para_mostrar(ruta_salida)} "
               f"({len(hojas['Estado actual'])} leads, {len(hojas['Historial'])} movimientos)")
     return ruta_salida
 
@@ -464,10 +476,8 @@ def generar_reporte_estado_leads(historial, asesor="", ruta_salida=None,
 # Ejecución directa: ejemplo con un asesor
 # ---------------------------------------------------------------------------
 def main():
-    import functions as fn
-
     labels = fn.import_json("json/secret.json")
-    asesor = labels["people"]["sin_financiera_restringida"][0]  # Miriam Gomez Cierres
+    asesor = labels["people"]["sin_financiera_restringida"][0]  # primer asesor de la lista
 
     df = fn.import_xlsx(RUTA_HISTORIAL)
     historial = filtrar_por_etiqueta(df, asesor)

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-setup_environment.py
+setup_invironment.py
 
 Prepara el entorno de trabajo del proyecto:
   1. Crea el entorno virtual (si no existe).
@@ -8,9 +8,9 @@ Prepara el entorno de trabajo del proyecto:
   3. Crea las carpetas que el proyecto necesita pero no están en el repositorio.
 
 Uso:
-    python setup_environment.py              # configuración normal
-    python setup_environment.py --recreate   # borra y vuelve a crear el entorno virtual
-    python setup_environment.py --skip-install
+    python setup_invironment.py              # configuración normal
+    python setup_invironment.py --recreate   # borra y vuelve a crear el entorno virtual
+    python setup_invironment.py --skip-install
 """
 
 import argparse

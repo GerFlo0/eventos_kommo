@@ -11,11 +11,13 @@ Trabaja con VARIOS EMBUDOS a la vez (por defecto CIERRES + VENTAS).
 De cada embudo se puede traer todo o solo las etapas que interesen.
 
 Requisitos:
-    pip install requests pandas openpyxl
+    Ejecutar antes setup_invironment.py (instala requirements.txt).
 
 Uso:
-    export KOMMO_TOKEN="eyJ0eXAiOi..."      # token de larga duracion
-    python kommo_historial_etapas.py
+    python extract_data_from_kommo.py
+
+    El token se toma de la variable de entorno KOMMO_TOKEN si existe;
+    si no, de secret.json -> kommo -> TOKEN.
 
 ----------------------------------------------------------------------
 COMO CAMBIAR ENTRE "UN SOLO ARCHIVO" Y "UN ARCHIVO POR EMBUDO"
@@ -30,9 +32,12 @@ En configuration.json:
                                       historial_etapas_VENTAS.xlsx
 
 Es lo unico que hay que tocar; se puede ir y venir las veces que sea.
-Nota: la columna DIAS_EN_ETAPA_ANTERIOR siempre se calcula con el
-historial completo del lead (aunque haya cruzado de un embudo a otro),
-asi que da el mismo numero en los dos modos.
+Nota: la columna DIAS_EN_ETAPA_ANTERIOR se calcula con TODOS los
+movimientos del lead que quedan en el reporte (aunque haya cruzado de un
+embudo a otro), asi que da el mismo numero en los dos modos. Ojo: son los
+movimientos que pasan los filtros y caen dentro del rango de fechas; si un
+filtro descarta un movimiento intermedio, esos dias se suman al siguiente,
+y el primer movimiento de cada lead dentro del rango queda vacio.
 ----------------------------------------------------------------------
 """
 
@@ -47,7 +52,6 @@ from threading import Lock
 import requests
 import pandas as pd
 from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 
 import functions as fn
 
@@ -72,7 +76,7 @@ def a_bool(valor, por_defecto=False):
 
 
 SUBDOMAIN = secret["kommo"]["SUBDOMAIN"]
-TOKEN = os.environ.get("KOMMO_TOKEN", secret["kommo"]["TOKEN"])
+TOKEN = os.environ.get("KOMMO_TOKEN") or secret["kommo"].get("TOKEN")
 
 # ---- Embudos a procesar --------------------------------------------------
 # Se definen en configuration.json -> settings.EMBUDOS (lista ordenada).
@@ -83,6 +87,8 @@ EMBUDOS_CFG = config["settings"]["EMBUDOS"]
 # Rango de fechas. FECHA_DESDE es necesaria para poder paralelizar.
 FECHA_DESDE = config["settings"]["FECHA_DESDE"]   # formato YYYY-MM-DD
 FECHA_HASTA = config["settings"]["FECHA_HASTA"]   # None = hasta hoy
+                                                  # (el dia indicado se
+                                                  # incluye completo)
 
 # Incluir el evento de creacion del lead (da la etapa de entrada)
 INCLUIR_LEAD_ADDED = a_bool(config["settings"]["INCLUIR_LEAD_ADDED"], True)
@@ -128,6 +134,9 @@ INCLUIR_USUARIOS = a_bool(
 TZ = timezone(timedelta(hours=-6))
 
 SALIDA = config["settings"].get("SALIDA", "historial_etapas_kommo.xlsx")
+# Relativa a la raiz del proyecto, para que funcione aunque el script se
+# ejecute desde otra carpeta.
+SALIDA = str(fn.ruta_proyecto(SALIDA))
 
 BASE = f"https://{SUBDOMAIN}.kommo.com/api/v4"
 HEADERS = {"Authorization": f"Bearer {TOKEN}"}
@@ -136,11 +145,10 @@ HEADERS = {"Authorization": f"Bearer {TOKEN}"}
 SESSION = requests.Session()
 SESSION.headers.update(HEADERS)
 
-_retry = Retry(total=5, connect=5, read=5, backoff_factor=1.5,
-               status_forcelist=[429, 500, 502, 503, 504],
-               allowed_methods=["GET"])
-SESSION.mount("https://", HTTPAdapter(max_retries=_retry,
-                                      pool_connections=HILOS,
+# Los reintentos se hacen SOLO en get() (abajo). Antes tambien los hacia el
+# adaptador HTTP y se multiplicaban: ante una caida de Kommo cada URL podia
+# quedarse varios minutos reintentando antes de fallar.
+SESSION.mount("https://", HTTPAdapter(pool_connections=HILOS,
                                       pool_maxsize=HILOS * 2))
 SESSION.headers.update({"User-Agent": "kommo-export/1.0"})
 
@@ -168,11 +176,19 @@ def limpiar_avance():
 # ----------------------------------------------------------------------
 # HELPERS
 # ----------------------------------------------------------------------
-def a_timestamp(fecha_str):
+def a_timestamp(fecha_str, fin_de_dia=False):
+    """YYYY-MM-DD -> timestamp.
+
+    fin_de_dia=False -> 00:00:00 de ese dia (para FECHA_DESDE).
+    fin_de_dia=True  -> 23:59:59 de ese dia (para FECHA_HASTA), asi los
+                        movimientos de ese dia tambien entran.
+    """
     if not fecha_str:
         return None
-    return int(datetime.strptime(fecha_str, "%Y-%m-%d")
-               .replace(tzinfo=TZ).timestamp())
+    inicio = datetime.strptime(fecha_str, "%Y-%m-%d").replace(tzinfo=TZ)
+    if fin_de_dia:
+        inicio += timedelta(days=1, seconds=-1)
+    return int(inicio.timestamp())
 
 
 def normalizar(texto):
@@ -182,24 +198,44 @@ def normalizar(texto):
     return " ".join(texto.upper().split())
 
 
+INTENTOS = 5
+
+
+def _espera(respuesta, intento):
+    """Segundos a esperar antes del siguiente intento: 2, 4, 8, 16...
+
+    Si Kommo manda el encabezado Retry-After (tipico en un 429), se
+    respeta, con un maximo de 60 segundos.
+    """
+    espera = min(2 ** (intento + 1), 30)
+    try:
+        pedido = respuesta.headers.get("Retry-After")
+        if pedido is not None:
+            espera = min(max(float(pedido), espera), 60)
+    except (AttributeError, TypeError, ValueError):
+        pass
+    return espera
+
+
 def get(url, params=None):
     ultimo_error = None
-    for intento in range(5):
+    for intento in range(INTENTOS):
+        r = None
         try:
             r = SESSION.get(url, params=params, timeout=60)
         except requests.exceptions.RequestException as e:
             ultimo_error = e
-            time.sleep(2 * (intento + 1))
-            continue
-        if r.status_code == 204:
-            return None
-        if r.status_code == 429 or r.status_code >= 500:
-            ultimo_error = f"HTTP {r.status_code}"
-            time.sleep(2 * (intento + 1))
-            continue
-        r.raise_for_status()
-        return r.json()
-    raise RuntimeError(f"Fallaron 5 intentos en {url} — {ultimo_error}")
+        else:
+            if r.status_code == 204:
+                return None
+            if r.status_code == 429 or r.status_code >= 500:
+                ultimo_error = f"HTTP {r.status_code}"
+            else:
+                r.raise_for_status()
+                return r.json()
+        if intento < INTENTOS - 1:          # no esperar despues del ultimo
+            time.sleep(_espera(r, intento))
+    raise RuntimeError(f"Fallaron {INTENTOS} intentos en {url} — {ultimo_error}")
 
 
 # ----------------------------------------------------------------------
@@ -207,17 +243,50 @@ def get(url, params=None):
 # ----------------------------------------------------------------------
 def cargar_catalogo_etapas():
     """Devuelve dos mapas:
-       etapas  = {status_id: (pipeline_id, embudo, etapa, orden)}
+       etapas  = {(pipeline_id, status_id): (pipeline_id, embudo, etapa, orden)}
        embudos = {pipeline_id: nombre_del_embudo}
+
+    La llave incluye el embudo porque en Kommo los estados de sistema
+    142 (Logrado con exito) y 143 (Venta perdida) tienen el MISMO id en
+    todos los embudos; con solo el status_id, el ultimo embudo leido
+    pisaba a los demas.
     """
     data = get(f"{BASE}/leads/pipelines")
     etapas, embudos = {}, {}
     for pipe in data["_embedded"]["pipelines"]:
         embudos[pipe["id"]] = pipe["name"]
         for st in pipe["_embedded"]["statuses"]:
-            etapas[st["id"]] = (pipe["id"], pipe["name"], st["name"],
-                                st["sort"])
+            etapas[(pipe["id"], st["id"])] = (pipe["id"], pipe["name"],
+                                              st["name"], st["sort"])
     return etapas, embudos
+
+
+def _status_id(clave):
+    """status_id de una llave del catalogo.
+
+    Acepta la llave nueva (pipeline_id, status_id) y tambien la antigua
+    (solo status_id), por compatibilidad.
+    """
+    return clave[1] if isinstance(clave, tuple) else clave
+
+
+SIN_ETAPA = (None, "", "", 999)
+
+
+def buscar_etapa(etapas, pipeline_id, status_id):
+    """(pipeline_id, embudo, etapa, orden) de un estado del catalogo.
+
+    Busca primero por (embudo, estado). Si el evento no trae el embudo, o
+    el catalogo usa la llave antigua, cae a buscar solo por status_id
+    (lo que hacia la version anterior). Si no existe, devuelve SIN_ETAPA.
+    """
+    info = etapas.get((pipeline_id, status_id))
+    if info is None:
+        info = etapas.get(status_id)
+    if info is None and status_id is not None:
+        info = next((v for k, v in etapas.items()
+                     if _status_id(k) == status_id), None)
+    return info or SIN_ETAPA
 
 
 def cargar_usuarios():
@@ -268,9 +337,10 @@ def resolver_embudos(etapas_cat, nombres_embudo):
 
         etapas_ids, etapas_nombres = set(), []
         if not todas:
-            for sid, (p_id, _emb, etapa, _orden) in etapas_cat.items():
+            for clave, (p_id, _emb, etapa, _orden) in etapas_cat.items():
                 if p_id != pid:
                     continue
+                sid = _status_id(clave)
                 n = normalizar(etapa)
                 if n in exactas or any(c in n for c in contienen):
                     etapas_ids.add(sid)
@@ -464,7 +534,8 @@ def _descargar_rango(desde, hasta):
 
 def descargar_eventos():
     """Parte el rango en HILOS tramos y los baja en paralelo."""
-    desde, hasta = a_timestamp(FECHA_DESDE), a_timestamp(FECHA_HASTA)
+    desde = a_timestamp(FECHA_DESDE)
+    hasta = a_timestamp(FECHA_HASTA, fin_de_dia=True)
 
     if desde is None or HILOS <= 1:
         return _descargar_rango(desde, hasta)
@@ -525,8 +596,8 @@ def armar_filas(eventos, etapas, usuarios, embudos, leads_permitidos):
                 if sid_new not in cfg["etapas_ids"]:
                     continue
 
-        _, _, eta_new, orden = etapas.get(sid_new, (None, "", "", 999))
-        _, _, eta_ant, _ = etapas.get(sid_ant, (None, "", "", 999))
+        _, _, eta_new, orden = buscar_etapa(etapas, pid_new, sid_new)
+        _, _, eta_ant, _ = buscar_etapa(etapas, pid_ant, sid_ant)
 
         fecha = datetime.fromtimestamp(ev["created_at"], TZ).replace(
             tzinfo=None)
@@ -613,6 +684,7 @@ def construir_pivote(df):
 # EXCEL
 # ----------------------------------------------------------------------
 def escribir_excel(ruta, df, etiquetas=None):
+    os.makedirs(os.path.dirname(ruta) or ".", exist_ok=True)
     if INCLUIR_ETIQUETAS:
         df = marcar_etiquetas(df, etiquetas or {})
     historial = df[[c for c in cols_historial() if c in df.columns]]
@@ -647,7 +719,8 @@ def main():
           f"Embudo complementario: {EMBUDOS_CFG[1]['NOMBRE'] if len(EMBUDOS_CFG) > 1 else 'NINGUNO'} | "
           f"Archivos separados: {ARCHIVOS_SEPARADOS}")
     if not TOKEN:
-        sys.exit("ERROR: falta la variable de entorno KOMMO_TOKEN")
+        sys.exit("ERROR: falta el token de Kommo (variable de entorno "
+                 "KOMMO_TOKEN o secret.json -> kommo -> TOKEN)")
 
     inicio = time.time()
 
@@ -709,7 +782,7 @@ def main():
 
     limpiar_avance()
     for ruta, parte in generados:
-        print(f"{ruta} | {len(parte)} movimientos | "
+        print(f"{fn.ruta_para_mostrar(ruta)} | {len(parte)} movimientos | "
               f"{parte['LEAD_ID'].nunique()} leads")
     resumen = " | ".join(f"{c['nombre_kommo']}: "
                          f"{(df['ORDEN_EMBUDO'] == c['orden']).sum()}"

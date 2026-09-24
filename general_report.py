@@ -7,17 +7,18 @@ Excel con dos hojas:
   - Detalle completo: cada lead con su asesor, etapa actual y categoría.
     Los conteos de "Efectividad" son fórmulas COUNTIFS sobre esta hoja.
 
-Rutas por defecto (según la fecha de ejecución, p. ej. 23 de septiembre):
-  - Reportes individuales: tablas/reportes/septiembre/23
+Rutas por defecto (según la fecha de ejecución, p. ej. 23 de septiembre),
+dentro de la carpeta del proyecto:
+  - Reportes individuales: tablas/reportes/individuales/septiembre/23
   - Reporte general:       tablas/reportes/generales/septiembre/23
 
 Uso:
-    python reporte_general.py                      # reportes de hoy
-    python reporte_general.py --fecha 22/09/2026   # reportes de otro día
-    python reporte_general.py --fecha 22/09/2026 --descripcion "SIN FINANCIERA RESTRINGIDA"
+    python general_report.py                      # reportes de hoy
+    python general_report.py --fecha 22/09/2026   # reportes de otro día
+    python general_report.py --fecha 22/09/2026 --descripcion "SIN FINANCIERA RESTRINGIDA"
 
 Desde otro script:
-    from reporte_general import generar_reporte_general
+    from general_report import generar_reporte_general
     generar_reporte_general()                          # hoy
     generar_reporte_general(fecha=date(2026, 9, 22))   # otro día
 """
@@ -32,17 +33,15 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.formatting.rule import CellIsRule
 
-try:
-    from individual_reports import MESES, clasificar_etapa, normalizar
-except ImportError:
-    print("Error: no se puede importar 'individual_reports'. Asegúrate de que esté en la misma carpeta.")
+import functions as fn
+from individual_reports import MESES, clasificar_etapa, normalizar
 
 CARPETA_INDIVIDUALES = "tablas/reportes/individuales"
 CARPETA_GENERALES = "tablas/reportes/generales"
 PREFIJO_INDIVIDUAL = "reporte_estado_leads"
 HOJA_ESTADO = "Estado actual"
 
-# Categoría de reports.py -> columna del reporte general
+# Categoría de individual_reports.py -> columna del reporte general
 COLUMNA_POR_CATEGORIA = {
     "Logrado con éxito": "Ganados",
     "Oferta": "Oferta",
@@ -86,7 +85,7 @@ _CENTRO = Alignment(horizontal="center", vertical="center", wrap_text=True)
 # Lectura de reportes individuales
 # ---------------------------------------------------------------------------
 def carpeta_del_dia(carpeta_base, fecha):
-    """tablas/reportes + 23/09/2026 -> tablas/reportes/septiembre/23"""
+    """tablas/reportes/generales + 23/09/2026 -> tablas/reportes/generales/septiembre/23"""
     return Path(carpeta_base) / MESES[fecha.month - 1] / f"{fecha.day:02d}"
 
 
@@ -94,10 +93,13 @@ def _nombre_asesor(ruta):
     """Toma el asesor de la celda B2 del Resumen; si no está, lo deduce del nombre del archivo."""
     try:
         wb = load_workbook(ruta, read_only=True)
-        if "Resumen" in wb.sheetnames:
-            valor = wb["Resumen"]["B2"].value
-            if valor:
-                return str(valor).strip()
+        try:
+            if "Resumen" in wb.sheetnames:
+                valor = wb["Resumen"]["B2"].value
+                if valor:
+                    return str(valor).strip()
+        finally:
+            wb.close()   # en modo read_only el archivo queda abierto si no se cierra
     except Exception:
         pass
     nombre = ruta.stem.replace(PREFIJO_INDIVIDUAL, "").strip("_")
@@ -322,7 +324,7 @@ def generar_reporte_general(fecha=None, carpeta_individuales=None, carpeta_salid
         Día de los reportes a consolidar. Por defecto, hoy.
     carpeta_individuales : str o Path, opcional
         Carpeta con los reportes individuales. Por defecto,
-        tablas/reportes/<mes>/<día> según `fecha`.
+        tablas/reportes/individuales/<mes>/<día> según `fecha`.
     carpeta_salida : str o Path, opcional
         Carpeta del reporte general. Por defecto,
         tablas/reportes/generales/<mes>/<día> según `fecha`.
@@ -336,15 +338,17 @@ def generar_reporte_general(fecha=None, carpeta_individuales=None, carpeta_salid
     Path del archivo generado.
     """
     fecha = fecha or date.today()
-    carpeta_individuales = Path(carpeta_individuales or carpeta_del_dia(CARPETA_INDIVIDUALES, fecha))
+    carpeta_individuales = Path(carpeta_individuales or
+                                carpeta_del_dia(fn.ruta_proyecto(CARPETA_INDIVIDUALES), fecha))
     if ruta_salida:
         ruta_salida = Path(ruta_salida)
     else:
-        carpeta_salida = Path(carpeta_salida or carpeta_del_dia(CARPETA_GENERALES, fecha))
+        carpeta_salida = Path(carpeta_salida or
+                              carpeta_del_dia(fn.ruta_proyecto(CARPETA_GENERALES), fecha))
         ruta_salida = carpeta_salida / f"reporte_general_{fecha:%Y-%m-%d}.xlsx"
 
     if verbose:
-        print(f"Leyendo reportes individuales de: {carpeta_individuales}")
+        print(f"Leyendo reportes individuales de: {fn.ruta_para_mostrar(carpeta_individuales)}")
     datos = leer_reportes_individuales(carpeta_individuales, verbose)
     orden = _orden_por_efectividad(datos)
 
@@ -363,9 +367,17 @@ def generar_reporte_general(fecha=None, carpeta_individuales=None, carpeta_salid
 
     if verbose:
         otros = datos.loc[datos["CATEGORIA"] == "Otros", "ETAPA_ACTUAL"].unique()
-        print(f"Reporte general generado: {ruta_salida} ({len(orden)} asesores, {len(datos)} leads)")
+        print(f"Reporte general generado: {fn.ruta_para_mostrar(ruta_salida)} "
+              f"({len(orden)} asesores, {len(datos)} leads)")
         if len(otros):
             print(f"  Aviso: etapas sin clasificar (columna 'Otros'): {', '.join(map(str, otros))}")
+        # Un lead con etiquetas de dos asesores sale en ambos reportes
+        # individuales y se cuenta en los dos.
+        por_lead = datos.groupby("LEAD_ID")["ASESOR"].nunique()
+        repetidos = por_lead[por_lead > 1].index.tolist()
+        if repetidos:
+            print(f"  Aviso: {len(repetidos)} lead(s) aparecen con más de un asesor y se "
+                  f"cuentan en cada uno: {', '.join(map(str, repetidos))}")
     return ruta_salida
 
 
