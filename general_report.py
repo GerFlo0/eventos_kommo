@@ -24,6 +24,7 @@ Desde otro script:
 """
 
 import argparse
+import glob
 from datetime import datetime
 from pathlib import Path
 
@@ -76,6 +77,7 @@ AZUL = "1F4E79"
 UMBRAL_BRUTA = 0.20
 VERDE = "C8E6C9"
 FORMATO_FECHA = "dd/mm/yyyy hh:mm"
+FORMATO_SOLO_FECHA = "dd/mm/yyyy"
 _RELLENO_AZUL = PatternFill("solid", start_color=AZUL)
 _BORDE = Border(*(Side(style="thin", color="BFBFBF"),) * 4)
 _CENTRO = Alignment(horizontal="center", vertical="center", wrap_text=True)
@@ -102,21 +104,27 @@ def _nombre_asesor(ruta):
             wb.close()   # en modo read_only el archivo queda abierto si no se cierra
     except Exception:
         pass
-    nombre = ruta.stem.replace(PREFIJO_INDIVIDUAL, "").strip("_")
+    nombre = ruta.stem.split(PREFIJO_INDIVIDUAL, 1)[-1].strip("_")   # sin prefijo ni nombre fijo
     return nombre.replace("_", " ").title() or ruta.stem
 
 
-def leer_reportes_individuales(carpeta, verbose=True):
-    """Une la hoja 'Estado actual' de todos los reportes individuales de la carpeta."""
+def leer_reportes_individuales(carpeta, verbose=True, prefijo=""):
+    """Une la hoja 'Estado actual' de todos los reportes individuales de la carpeta.
+
+    prefijo: solo se leen los archivos cuyo nombre empieza con
+    <prefijo>reporte_estado_leads (los de una misma corrida).
+    """
     carpeta = Path(carpeta)
     if not carpeta.is_dir():
         raise FileNotFoundError(f"No existe la carpeta de reportes individuales: {carpeta}")
 
     archivos = sorted(
-        p for p in carpeta.glob(f"{PREFIJO_INDIVIDUAL}*.xlsx") if not p.name.startswith("~$")
+        p for p in carpeta.glob(f"{glob.escape(prefijo)}{PREFIJO_INDIVIDUAL}*.xlsx")
+        if not p.name.startswith("~$")
     )
     if not archivos:
-        raise FileNotFoundError(f"No hay reportes individuales en: {carpeta}")
+        raise FileNotFoundError(f"No hay reportes individuales ({prefijo}{PREFIJO_INDIVIDUAL}*.xlsx) "
+                                f"en: {carpeta}")
 
     tablas = []
     for ruta in archivos:
@@ -172,6 +180,8 @@ def _hoja_detalle(wb, datos, orden_asesores, titulo):
         ("Categoría", "CATEGORIA", 16, None),
         ("¿Ganado?", None, 10, None),
         ("Creación del lead", "creacion_de_lead", 20, FORMATO_FECHA),
+        ("ESTATUS DE NEGOCIO", "ESTATUS DE NEGOCIO", 22, None),
+        ("FECHA DICTAMEN", "FECHA DICTAMEN", 16, FORMATO_SOLO_FECHA),
         ("Fecha último movimiento", "FECHA_ULTIMO_MOVIMIENTO", 20, FORMATO_FECHA),
         ("Tiempo transcurrido", "TIEMPO_TRANSCURRIDO", 16, None),
         ("Total movimientos", "TOTAL_MOVIMIENTOS", 12, None),
@@ -198,6 +208,9 @@ def _hoja_detalle(wb, datos, orden_asesores, titulo):
             c = ws.cell(row=fila, column=col, value=valor)
             c.font = Font(name=FUENTE, bold=(col == 1))
             c.border = _BORDE
+            if fmt == FORMATO_SOLO_FECHA and hasattr(valor, "hour") and \
+                    (valor.hour, valor.minute, valor.second) != (0, 0, 0):
+                fmt = FORMATO_FECHA              # la fecha trae hora: se muestra
             if fmt:
                 c.number_format = fmt
             if campo not in ("ASESOR", "ETAPA_ACTUAL", "RUTA"):   # esas van a la izquierda
@@ -315,7 +328,8 @@ def _orden_por_efectividad(datos):
 # Función pública
 # ---------------------------------------------------------------------------
 def generar_reporte_general(fecha=None, carpeta_individuales=None, carpeta_salida=None,
-                            ruta_salida=None, descripcion="", verbose=True):
+                            ruta_salida=None, descripcion="", verbose=True,
+                            prefijo="", prefijo_individuales=""):
     """
     Genera el reporte general de efectividad.
 
@@ -346,11 +360,11 @@ def generar_reporte_general(fecha=None, carpeta_individuales=None, carpeta_salid
     else:
         carpeta_salida = Path(carpeta_salida or
                               carpeta_del_dia(fn.ruta_proyecto(CARPETA_GENERALES), fecha))
-        ruta_salida = carpeta_salida / f"reporte_general_dictaminados_{fecha:%Y-%m-%d}.xlsx"
+        ruta_salida = carpeta_salida / f"{prefijo}reporte_general_{fecha:%Y-%m-%d}.xlsx"
 
     if verbose:
         print(f"Leyendo reportes individuales de: {fn.ruta_para_mostrar(carpeta_individuales)}")
-    datos = leer_reportes_individuales(carpeta_individuales, verbose)
+    datos = leer_reportes_individuales(carpeta_individuales, verbose, prefijo=prefijo_individuales)
     orden = _orden_por_efectividad(datos)
 
     partes = [f"{MESES[fecha.month - 1].upper()} {fecha.year}", "REPORTE GENERAL DE EFECTIVIDAD"]
@@ -399,6 +413,9 @@ def main():
     parser.add_argument("--carpeta", help="Carpeta de reportes individuales (sustituye la ruta por fecha).")
     parser.add_argument("--salida", help="Carpeta del reporte general (sustituye la ruta por fecha).")
     parser.add_argument("--descripcion", default="", help="Texto adicional para el título.")
+    parser.add_argument("--prefijo", default="", help="Texto al inicio del nombre del reporte general.")
+    parser.add_argument("--prefijo-individuales", default="",
+                        help="Prefijo de los reportes individuales a consolidar.")
     args = parser.parse_args()
 
     try:
@@ -407,6 +424,8 @@ def main():
             carpeta_individuales=args.carpeta,
             carpeta_salida=args.salida,
             descripcion=args.descripcion,
+            prefijo=args.prefijo,
+            prefijo_individuales=args.prefijo_individuales,
         )
     except (FileNotFoundError, ValueError) as error:
         raise SystemExit(f"No se generó el reporte general: {error}")

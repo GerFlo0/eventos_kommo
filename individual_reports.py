@@ -61,6 +61,7 @@ ORDEN_CATEGORIAS = [c for c, _ in CATEGORIAS] + [CATEGORIA_FUTURO, CATEGORIA_OTR
 _MAPA_ETAPAS = {alias: cat for cat, aliases in CATEGORIAS for alias in aliases}
 
 FORMATO_FECHA = "dd/mm/yyyy hh:mm"
+FORMATO_SOLO_FECHA = "dd/mm/yyyy"
 FUENTE = "Arial"
 
 
@@ -262,7 +263,8 @@ HOJA_POR_LEAD = "Historial por lead"
 # Columnas que se muestran en la hoja "Estado actual" (el DataFrame interno
 # conserva más datos porque los usan el Resumen y el Historial por lead).
 COLUMNAS_HOJA_ESTADO = [
-    "LEAD_ID", "creacion_de_lead","ETAPA_ACTUAL", "FECHA_ULTIMO_MOVIMIENTO",
+    "LEAD_ID", "creacion_de_lead", "ETAPA_ACTUAL", "ESTATUS DE NEGOCIO", "FECHA DICTAMEN",
+    "FECHA_ULTIMO_MOVIMIENTO",
     "TIEMPO_TRANSCURRIDO", "TOTAL_MOVIMIENTOS", "RUTA",
 ]
 COLUMNAS_BLOQUE = [
@@ -352,6 +354,17 @@ def _escribir_historial_por_lead(libro, estado, historial):
     return inicio_bloques
 
 
+def _formato_fecha_sin_hora(ws, encabezado):
+    """Formato dd/mm/yyyy para una columna de fechas; si una fecha trae hora, se muestra."""
+    for idx, celda in enumerate(ws[1], start=1):
+        if celda.value != encabezado:
+            continue
+        for (c,) in ws.iter_rows(min_row=2, min_col=idx, max_col=idx):
+            if hasattr(c.value, "hour"):
+                con_hora = (c.value.hour, c.value.minute, c.value.second) != (0, 0, 0)
+                c.number_format = FORMATO_FECHA if con_hora else FORMATO_SOLO_FECHA
+
+
 def escribir_excel(hojas, ruta, fecha_corte, asesor=""):
     """Escribe el reporte con fechas reales de Excel y formato legible."""
     with pd.ExcelWriter(ruta, engine="openpyxl", datetime_format=FORMATO_FECHA) as writer:
@@ -399,6 +412,7 @@ def escribir_excel(hojas, ruta, fecha_corte, asesor=""):
             "creacion_de_lead": FORMATO_FECHA,
             "FECHA_ULTIMO_MOVIMIENTO": FORMATO_FECHA,
         })
+        _formato_fecha_sin_hora(ws, "FECHA DICTAMEN")
         for (celda,) in ws.iter_rows(min_row=2, max_col=1):
             if celda.value in inicio_bloques:
                 celda.hyperlink = Hyperlink(
@@ -414,15 +428,19 @@ def _carpeta_por_fecha(carpeta_base, fecha):
     """tablas + 23/09/2026 -> tablas/septiembre/23"""
     return Path(carpeta_base) / MESES[fecha.month - 1] / f"{fecha.day:02d}"
 
-def _nombre_archivo(asesor):
-    """'Miriam Gómez Cierres' -> 'reporte_individual_dictaminados_miriam_gomez_cierres.xlsx'."""
+def _nombre_archivo(asesor, prefijo=""):
+    """'Miriam Gómez Cierres' -> 'reporte_estado_leads_miriam_gomez_cierres.xlsx'.
+
+    El prefijo, si se indica, va al inicio: 'ENERO_reporte_estado_leads_...'.
+    """
     slug = re.sub(r"[^a-z0-9]+", "_", normalizar(asesor)).strip("_")
-    return f"reporte_individual_dictaminados_{slug}.xlsx" if slug else "reporte_individual_dictaminados.xlsx"
+    nombre = f"reporte_estado_leads_{slug}.xlsx" if slug else "reporte_estado_leads.xlsx"
+    return f"{prefijo}{nombre}"
 
 
 def generar_reporte_estado_leads(historial, asesor="", ruta_salida=None,
                                  fecha_corte=None, carpeta_salida=None,
-                                 verbose=True, fecha_archivo=None):
+                                 verbose=True, fecha_archivo=None, prefijo=""):
     """
     Genera el reporte de estado actual e historial de leads en Excel.
 
@@ -469,7 +487,7 @@ def generar_reporte_estado_leads(historial, asesor="", ruta_salida=None,
         ruta_salida = Path(ruta_salida)
     else:
         fecha_archivo = fecha_archivo or fn.fecha_reportes()
-        ruta_salida = _carpeta_por_fecha(carpeta_salida, fecha_archivo) / _nombre_archivo(asesor)
+        ruta_salida = _carpeta_por_fecha(carpeta_salida, fecha_archivo) / _nombre_archivo(asesor, prefijo=prefijo)
     ruta_salida.parent.mkdir(parents=True, exist_ok=True)
 
     hojas = generar_reporte(historial, fecha_corte)

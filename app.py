@@ -13,6 +13,7 @@ Las carpetas y archivos de los reportes se nombran con settings.FECHA_HASTA
 de configuration.json (la fecha de hoy si es null).
 """
 import contextlib
+import glob
 import tkinter as tk
 from datetime import datetime
 from tkinter import messagebox, ttk
@@ -35,6 +36,8 @@ COL_CREACION = "creacion_de_lead"
 CLAVES_LISTA_ESTATUS = ["estatus_negocio"]
 # Así une el extractor los valores de un campo de opción múltiple.
 SEPARADOR_MULTIPLE = " | "
+# Caracteres que Windows no permite en nombres de archivo.
+CARACTERES_PROHIBIDOS = set('<>:"/\\|?*')
 
 
 # ---------------------------------------------------------------------------
@@ -103,18 +106,37 @@ def filtrar_historial(df, estatus, solo_desde_fecha=None):
     return df[df["LEAD_ID"].isin(leads)].copy()
 
 
-def generar_reportes(df, secret, fecha, descripcion=""):
+def validar_prefijo(texto):
+    """Texto para el inicio de un nombre de archivo.
+
+    Se quitan solo los espacios del inicio: un espacio al final se respeta,
+    porque puede servir de separador ("ENERO " -> "ENERO reporte_general...").
+    """
+    texto = (texto or "").lstrip()
+    prohibidos = sorted(set(texto) & CARACTERES_PROHIBIDOS)
+    if prohibidos:
+        raise ValueError(f"Caracteres no permitidos en nombres de archivo: {' '.join(prohibidos)}")
+    return texto
+
+
+def generar_reportes(df, secret, fecha, descripcion="", prefijo_individual="", prefijo_general=""):
     """Reportes individuales de cada asesor + reporte general.
 
-    fecha: nombra las carpetas y archivos. Devuelve la ruta del reporte general.
+    fecha: nombra las carpetas y archivos. Los prefijos se agregan al inicio
+    del nombre de los reportes individuales y del general (vacío = nombre
+    normal). Devuelve la ruta del reporte general.
     """
+    prefijo_individual = validar_prefijo(prefijo_individual)
+    prefijo_general = validar_prefijo(prefijo_general)
+
     carpeta_base = fn.ruta_proyecto(CARPETA_INDIVIDUALES)
     carpeta_dia = carpeta_del_dia(carpeta_base, fecha)
 
-    # El reporte general junta TODOS los reportes individuales de la carpeta
-    # del día: se borran los de una corrida anterior para no mezclar filtros.
+    # El reporte general junta los reportes individuales de la carpeta del día
+    # que tienen este prefijo: se borran los de una corrida anterior con el
+    # mismo prefijo para no mezclar filtros (los de otros prefijos se quedan).
     if carpeta_dia.is_dir():
-        for viejo in carpeta_dia.glob(f"{PREFIJO_INDIVIDUAL}*.xlsx"):
+        for viejo in carpeta_dia.glob(f"{glob.escape(prefijo_individual)}{PREFIJO_INDIVIDUAL}*.xlsx"):
             viejo.unlink()   # PermissionError si está abierto en Excel
 
     fecha_corte = datetime.now().replace(microsecond=0)  # misma para todos los reportes
@@ -126,7 +148,8 @@ def generar_reportes(df, secret, fecha, descripcion=""):
             resultado = con.execute(secret["query"], [f"%{asesor}%"]).df()
             ruta = generar_reporte_estado_leads(
                 resultado, asesor=asesor, fecha_corte=fecha_corte,
-                carpeta_salida=carpeta_base, fecha_archivo=fecha)
+                carpeta_salida=carpeta_base, fecha_archivo=fecha,
+                prefijo=prefijo_individual)
             if ruta:
                 generados.append(ruta)
     finally:
@@ -136,7 +159,8 @@ def generar_reportes(df, secret, fecha, descripcion=""):
         raise ValueError("Ningún asesor tiene leads con los filtros elegidos; "
                          "no se generó el reporte general.")
     return generar_reporte_general(fecha=fecha, carpeta_individuales=carpeta_dia,
-                                   descripcion=descripcion)
+                                   descripcion=descripcion, prefijo=prefijo_general,
+                                   prefijo_individuales=prefijo_individual)
 
 
 def cargar_datos():
@@ -177,7 +201,7 @@ class App(tk.Tk):
         self.secret, self.estatus, self.historial = secret, estatus, historial
         self.fecha, self.fecha_desde = fecha, fecha_desde
         self.title("Reportes de leads - Kommo")
-        self.minsize(580, 600)
+        self.minsize(600, 720)
         self._armar()
         self._actualizar_conteo()
         no_listados = estatus_no_listados(historial, estatus)
@@ -236,6 +260,24 @@ class App(tk.Tk):
         self.descripcion = tk.StringVar()
         ttk.Entry(caja, textvariable=self.descripcion).pack(fill="x")
 
+        # Texto al inicio de los nombres de archivo (vacío = nombre normal)
+        caja = ttk.LabelFrame(marco, text="Texto al inicio del nombre de los archivos (opcional)",
+                              padding=8)
+        caja.pack(fill="x", pady=(10, 0))
+        caja.columnconfigure(1, weight=1)
+        self.prefijo_individual = tk.StringVar()
+        self.prefijo_general = tk.StringVar()
+        self.vista_individual = ttk.Label(caja, foreground="gray40", wraplength=420)
+        self.vista_general = ttk.Label(caja, foreground="gray40", wraplength=420)
+        for i, (texto, variable, vista) in enumerate([
+                ("Reportes individuales:", self.prefijo_individual, self.vista_individual),
+                ("Reporte general:", self.prefijo_general, self.vista_general)]):
+            ttk.Label(caja, text=texto).grid(row=i * 2, column=0, sticky="w", padx=(0, 8))
+            ttk.Entry(caja, textvariable=variable).grid(row=i * 2, column=1, sticky="ew")
+            vista.grid(row=i * 2 + 1, column=1, sticky="w", pady=(0, 4))
+            variable.trace_add("write", lambda *_a: self._actualizar_nombres())
+        self._actualizar_nombres()
+
         # Conteo y botón
         fila = ttk.Frame(marco)
         fila.pack(fill="x", pady=(10, 0))
@@ -265,6 +307,18 @@ class App(tk.Tk):
         df = filtrar_historial(self.historial, self._estatus_elegidos(), self._fecha_filtro())
         self.conteo.config(text=f"Leads que cumplen los filtros: {df['LEAD_ID'].nunique()}")
 
+    def _actualizar_nombres(self):
+        """Muestra cómo quedará el nombre de los archivos."""
+        nombres = (
+            (self.prefijo_individual, self.vista_individual, f"{PREFIJO_INDIVIDUAL}_<asesor>.xlsx"),
+            (self.prefijo_general, self.vista_general, f"reporte_general_{self.fecha:%Y-%m-%d}.xlsx"),
+        )
+        for variable, vista, nombre in nombres:
+            try:
+                vista.config(text=validar_prefijo(variable.get()) + nombre, foreground="gray40")
+            except ValueError as e:
+                vista.config(text=str(e), foreground="red")
+
     def _escribir(self, texto):
         _Consola(self).write(texto)
 
@@ -281,7 +335,8 @@ class App(tk.Tk):
                 df = filtrar_historial(self.historial, estatus, self._fecha_filtro())
                 print(f"Estatus: {', '.join(estatus)}")
                 print(f"Leads seleccionados: {df['LEAD_ID'].nunique()}\n")
-                ruta = generar_reportes(df, self.secret, self.fecha, self.descripcion.get().strip())
+                ruta = generar_reportes(df, self.secret, self.fecha, self.descripcion.get().strip(),
+                                        self.prefijo_individual.get(), self.prefijo_general.get())
             messagebox.showinfo("Listo", f"Reporte general generado:\n{fn.ruta_para_mostrar(ruta)}")
         except PermissionError as e:
             messagebox.showerror("Archivo abierto",
