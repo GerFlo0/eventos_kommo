@@ -124,6 +124,11 @@ CAMPOS_REQUERIDOS = list(config["settings"].get("CAMPOS_REQUERIDOS", []))
 INCLUIR_ETIQUETAS = a_bool(config["settings"].get("INCLUIR_ETIQUETAS"), True)
 COL_ETIQUETAS = "ETIQUETAS"
 
+# Columna con la fecha (y hora) en que se creo el lead en Kommo. Sale del
+# campo created_at de la tarjeta, asi que existe aunque la creacion haya
+# sido antes de FECHA_DESDE.
+COL_CREACION = "creacion_de_lead"
+
 # ---- Rendimiento y ruido -------------------------------------------------
 VERBOSE = a_bool(config["settings"]["performance"]["VERBOSE"], False)
 HILOS = int(config["settings"]["performance"]["THREADS"])
@@ -400,6 +405,14 @@ def campos_pedidos():
     return {normalizar(c) for c in pedidos}
 
 
+def _fecha_creacion(lead):
+    """created_at de la tarjeta del lead como fecha y hora local (sin zona)."""
+    ts = lead.get("created_at")
+    if not ts:
+        return None
+    return datetime.fromtimestamp(ts, TZ).replace(tzinfo=None)
+
+
 def cargar_tarjetas(lead_ids):
     """Devuelve {lead_id: {"campos": {...}, "etiquetas": "a, b"}}.
 
@@ -407,7 +420,7 @@ def cargar_tarjetas(lead_ids):
     """
     quiero = campos_pedidos()
     tarjetas = {}
-    if (not quiero and not INCLUIR_ETIQUETAS) or not lead_ids:
+    if not lead_ids:
         return tarjetas
 
     ids = sorted(lead_ids)
@@ -430,7 +443,8 @@ def cargar_tarjetas(lead_ids):
                              (lead.get("_embedded") or {}).get("tags") or []
                              if t.get("name")]
                 tarjetas[lead["id"]] = {"campos": datos,
-                                        "etiquetas": ", ".join(etiquetas)}
+                                        "etiquetas": ", ".join(etiquetas),
+                                        "creacion": _fecha_creacion(lead)}
             if not data.get("_links", {}).get("next"):
                 break
             page += 1
@@ -442,7 +456,8 @@ def aplicar_campos(filas, tarjetas, embudos):
     """Agrega las columnas de la tarjeta y descarta los leads incompletos."""
     salida, descartados = [], set()
     for fila in filas:
-        datos = tarjetas.get(fila["LEAD_ID"], {}).get("campos", {})
+        tarjeta = tarjetas.get(fila["LEAD_ID"], {})
+        datos = tarjeta.get("campos", {})
         requeridos = embudos[fila["PIPELINE_ID"]]["campos_requeridos"]
 
         faltante = any(datos.get(normalizar(c)) in (None, "")
@@ -450,6 +465,8 @@ def aplicar_campos(filas, tarjetas, embudos):
         if faltante:
             descartados.add(fila["LEAD_ID"])
             continue
+
+        fila[COL_CREACION] = tarjeta.get("creacion")
 
         for etiqueta in CAMPOS_TARJETA:
             fila[etiqueta] = datos.get(normalizar(etiqueta))
@@ -626,7 +643,7 @@ def cols_historial():
     Los campos de la tarjeta (CAMPOS_TARJETA) van despues de EMBUDO,
     porque son datos del lead y no del movimiento.
     """
-    return (["LEAD_ID", "EMBUDO"] + list(CAMPOS_TARJETA) +
+    return (["LEAD_ID", "EMBUDO", COL_CREACION] + list(CAMPOS_TARJETA) +
             ([COL_ETIQUETAS] if INCLUIR_ETIQUETAS else []) +
             ["ETAPA_ANTERIOR", "ETAPA_NUEVA", "FECHA",
              "MOVIDO_POR", "DIAS_EN_ETAPA_ANTERIOR"])
@@ -747,20 +764,19 @@ def main():
     if not filas:
         sys.exit("No hubo movimientos que cumplan los filtros configurados.")
 
-    # Datos de la tarjeta del lead (campos personalizados y etiquetas) +
-    # descarte de los que tienen vacio alguno de los CAMPOS_REQUERIDOS
-    etiquetas = {}
-    if campos_pedidos() or INCLUIR_ETIQUETAS:
-        log("Leyendo tarjetas de los leads...")
-        tarjetas = cargar_tarjetas({f["LEAD_ID"] for f in filas})
-        etiquetas = {lid: t["etiquetas"] for lid, t in tarjetas.items()}
-        filas, descartados = aplicar_campos(filas, tarjetas, embudos)
-        if descartados:
-            log(f"  {descartados} leads descartados por campos vacios")
-        if not filas:
-            sys.exit("Ningun lead tiene llenos todos los CAMPOS_REQUERIDOS "
-                     f"({', '.join(CAMPOS_REQUERIDOS) or 'sin campos'}). "
-                     "Revisa que los nombres coincidan con los de Kommo.")
+        # Datos de la tarjeta del lead (fecha de creacion, campos personalizados
+    # y etiquetas) + descarte de los que tienen vacio alguno de los
+    # CAMPOS_REQUERIDOS. Se leen siempre, porque de ahi sale creacion_de_lead.
+    log("Leyendo tarjetas de los leads...")
+    tarjetas = cargar_tarjetas({f["LEAD_ID"] for f in filas})
+    etiquetas = {lid: t["etiquetas"] for lid, t in tarjetas.items()}
+    filas, descartados = aplicar_campos(filas, tarjetas, embudos)
+    if descartados:
+        log(f"  {descartados} leads descartados por campos vacios")
+    if not filas:
+        sys.exit("Ningun lead tiene llenos todos los CAMPOS_REQUERIDOS "
+                 f"({', '.join(CAMPOS_REQUERIDOS) or 'sin campos'}). "
+                 "Revisa que los nombres coincidan con los de Kommo.")
 
     df = construir_df(filas)
 

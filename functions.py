@@ -1,6 +1,7 @@
 import json
 import locale
 import os
+from datetime import date, datetime
 from pathlib import Path
 
 import pandas as pd
@@ -101,3 +102,29 @@ def import_json(file_path: str) -> dict:
         raise ValueError(
             f"El archivo {ruta} no es un JSON válido "
             f"(línea {e.lineno}, columna {e.colno}): {e.msg}") from e
+
+# ---------------------------------------------------------------------------
+# Fechas de configuration.json
+# ---------------------------------------------------------------------------
+RUTA_CONFIGURACION = "json/configuration.json"
+
+def _fecha_de_configuracion(clave):
+    """settings.<clave> de configuration.json como date (None si es null)."""
+    valor = import_json(RUTA_CONFIGURACION)["settings"].get(clave)
+    if not valor:
+        return None
+    try:
+        return datetime.strptime(valor, "%Y-%m-%d").date()
+    except ValueError:
+        raise ValueError(f"{clave} en configuration.json debe tener formato "
+                         f"AAAA-MM-DD (valor actual: {valor!r})") from None
+
+def fecha_reportes() -> date:
+    """Fecha con la que se nombran las carpetas y archivos de los reportes.
+    Es settings.FECHA_HASTA de configuration.json; si es null, hoy.
+    """
+    return _fecha_de_configuracion("FECHA_HASTA") or date.today()
+
+def fecha_desde():
+    """settings.FECHA_DESDE de configuration.json como date (None si es null)."""
+    return _fecha_de_configuracion("FECHA_DESDE")

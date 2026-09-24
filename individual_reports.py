@@ -177,7 +177,7 @@ def generar_reporte(df, fecha_corte):
     ultimos = ultimos.sort_values(["_orden", "DIAS_DESDE_ULTIMO_MOVIMIENTO"], ascending=[True, False])
 
     columnas_estado = [
-        "LEAD_ID", "ESTADO_ACTUAL", "ETAPA_NUEVA", "FECHA",
+        "LEAD_ID", "creacion_de_lead","ESTADO_ACTUAL", "ETAPA_NUEVA", "FECHA",
         "DIAS_DESDE_ULTIMO_MOVIMIENTO", "TIEMPO_TRANSCURRIDO", "ETAPA_ANTERIOR",
         "ESTATUS DE NEGOCIO", "FECHA DICTAMEN", "TOTAL_MOVIMIENTOS", "RUTA",
         "ETIQUETAS", "EMBUDO",
@@ -262,7 +262,7 @@ HOJA_POR_LEAD = "Historial por lead"
 # Columnas que se muestran en la hoja "Estado actual" (el DataFrame interno
 # conserva más datos porque los usan el Resumen y el Historial por lead).
 COLUMNAS_HOJA_ESTADO = [
-    "LEAD_ID", "ETAPA_ACTUAL", "FECHA_ULTIMO_MOVIMIENTO",
+    "LEAD_ID", "creacion_de_lead","ETAPA_ACTUAL", "FECHA_ULTIMO_MOVIMIENTO",
     "TIEMPO_TRANSCURRIDO", "TOTAL_MOVIMIENTOS", "RUTA",
 ]
 COLUMNAS_BLOQUE = [
@@ -357,7 +357,11 @@ def escribir_excel(hojas, ruta, fecha_corte, asesor=""):
     with pd.ExcelWriter(ruta, engine="openpyxl", datetime_format=FORMATO_FECHA) as writer:
         fila_tabla_resumen = 5
         hojas["Resumen"].to_excel(writer, sheet_name="Resumen", index=False, startrow=fila_tabla_resumen - 1)
-        hojas["Estado actual"][COLUMNAS_HOJA_ESTADO].to_excel(writer, sheet_name="Estado actual", index=False)
+        estado = hojas["Estado actual"]
+        # creacion_de_lead solo existe si el historial se generó con la versión
+        # actual del extractor; si falta, la hoja sale sin esa columna.
+        estado[[c for c in COLUMNAS_HOJA_ESTADO if c in estado.columns]].to_excel(
+            writer, sheet_name="Estado actual", index=False)
 
         libro = writer.book
 
@@ -392,6 +396,7 @@ def escribir_excel(hojas, ruta, fecha_corte, asesor=""):
         # --- Estado actual, con vínculo de cada LEAD_ID a su bloque de historial
         ws = libro["Estado actual"]
         _dar_formato(ws, 1, {
+            "creacion_de_lead": FORMATO_FECHA,
             "FECHA_ULTIMO_MOVIMIENTO": FORMATO_FECHA,
         })
         for (celda,) in ws.iter_rows(min_row=2, max_col=1):
@@ -417,7 +422,7 @@ def _nombre_archivo(asesor):
 
 def generar_reporte_estado_leads(historial, asesor="", ruta_salida=None,
                                  fecha_corte=None, carpeta_salida=None,
-                                 verbose=True):
+                                 verbose=True, fecha_archivo=None):
     """
     Genera el reporte de estado actual e historial de leads en Excel.
 
@@ -460,7 +465,11 @@ def generar_reporte_estado_leads(historial, asesor="", ruta_salida=None,
     fecha_corte = fecha_corte or datetime.now().replace(microsecond=0)
     if carpeta_salida is None:
         carpeta_salida = fn.ruta_proyecto(CARPETA_REPORTES)
-    ruta_salida = Path(ruta_salida) if ruta_salida else _carpeta_por_fecha(carpeta_salida, fecha_corte) / _nombre_archivo(asesor)
+    if ruta_salida:
+        ruta_salida = Path(ruta_salida)
+    else:
+        fecha_archivo = fecha_archivo or fn.fecha_reportes()
+        ruta_salida = _carpeta_por_fecha(carpeta_salida, fecha_archivo) / _nombre_archivo(asesor)
     ruta_salida.parent.mkdir(parents=True, exist_ok=True)
 
     hojas = generar_reporte(historial, fecha_corte)

@@ -24,7 +24,7 @@ Desde otro script:
 """
 
 import argparse
-from datetime import date, datetime
+from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
@@ -171,6 +171,7 @@ def _hoja_detalle(wb, datos, orden_asesores, titulo):
         ("Etapa actual (Kommo)", "ETAPA_ACTUAL", 22, None),
         ("Categoría", "CATEGORIA", 16, None),
         ("¿Ganado?", None, 10, None),
+        ("Creación del lead", "creacion_de_lead", 20, FORMATO_FECHA),
         ("Fecha último movimiento", "FECHA_ULTIMO_MOVIMIENTO", 20, FORMATO_FECHA),
         ("Tiempo transcurrido", "TIEMPO_TRANSCURRIDO", 16, None),
         ("Total movimientos", "TOTAL_MOVIMIENTOS", 12, None),
@@ -199,7 +200,7 @@ def _hoja_detalle(wb, datos, orden_asesores, titulo):
             c.border = _BORDE
             if fmt:
                 c.number_format = fmt
-            if col not in (1, 3, 9):
+            if campo not in ("ASESOR", "ETAPA_ACTUAL", "RUTA"):   # esas van a la izquierda
                 c.alignment = Alignment(horizontal="center")
         fila += 1
 
@@ -337,7 +338,7 @@ def generar_reporte_general(fecha=None, carpeta_individuales=None, carpeta_salid
     --------
     Path del archivo generado.
     """
-    fecha = fecha or date.today()
+    fecha = fecha or fn.fecha_reportes()
     carpeta_individuales = Path(carpeta_individuales or
                                 carpeta_del_dia(fn.ruta_proyecto(CARPETA_INDIVIDUALES), fecha))
     if ruta_salida:
