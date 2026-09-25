@@ -16,6 +16,9 @@ Requisitos:
 Uso:
     python extract_data_from_kommo.py
 
+    Desde app.py se usa descargar_historial(), que recibe el rango de fechas
+    y la ruta de salida, e informa el avance para la barra de progreso.
+
     El token se toma de la variable de entorno KOMMO_TOKEN si existe;
     si no, de secret.json -> kommo -> TOKEN.
 
@@ -47,6 +50,7 @@ import time
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone, timedelta
+from pathlib import Path
 from threading import Lock
 
 import requests
@@ -166,12 +170,26 @@ def log(msg):
 _prog = {"req": 0, "ev": 0}
 _lock = Lock()
 
+# Aviso de avance para interfaces gráficas (app.py): función(fraccion, texto)
+# con fraccion entre 0 y 1 (None = solo actualizar el texto). Por consola
+# queda en None y no hace nada.
+AL_AVANZAR = None
+
+
+def _avisar(fraccion, texto):
+    if AL_AVANZAR is not None:
+        try:
+            AL_AVANZAR(fraccion, texto)
+        except Exception:  # noqa: BLE001 - un fallo de la interfaz no debe detener la descarga
+            pass
+
 
 def avance(n_eventos):
     with _lock:
         _prog["ev"] += n_eventos
         print(f"\r {_prog['ev']} eventos",
               end="", file=sys.stderr, flush=True)
+        _avisar(None, f"Descargando eventos... {_prog['ev']} encontrados")
 
 
 def limpiar_avance():
@@ -449,6 +467,8 @@ def cargar_tarjetas(lead_ids):
                 break
             page += 1
         log(f"  tarjetas leidas: {len(tarjetas)}/{len(ids)}")
+        hechos = min(i + LOTE, len(ids))
+        _avisar(0.75 + 0.18 * hechos / len(ids), f"Leyendo tarjetas de los leads... {hechos}/{len(ids)}")
     return tarjetas
 
 
@@ -555,7 +575,9 @@ def descargar_eventos():
     hasta = a_timestamp(FECHA_HASTA, fin_de_dia=True)
 
     if desde is None or HILOS <= 1:
-        return _descargar_rango(desde, hasta)
+        eventos = _descargar_rango(desde, hasta)
+        _avisar(0.70, f"Eventos descargados: {len(eventos)}")
+        return eventos
 
     fin = hasta or int(time.time())
     paso = max(1, (fin - desde) // HILOS)
@@ -566,8 +588,10 @@ def descargar_eventos():
 
     eventos = []
     with ThreadPoolExecutor(max_workers=HILOS) as ex:
-        for lote in ex.map(lambda r: _descargar_rango(*r), rangos):
+        for hechos, lote in enumerate(ex.map(lambda r: _descargar_rango(*r), rangos), start=1):
             eventos.extend(lote)
+            _avisar(0.12 + 0.58 * hechos / len(rangos),
+                    f"Descargando eventos... {len(eventos)} encontrados")
 
     # Dedup por si un evento cae justo en la frontera de dos tramos
     vistos, unicos = set(), []
@@ -740,11 +764,14 @@ def main():
                  "KOMMO_TOKEN o secret.json -> kommo -> TOKEN)")
 
     inicio = time.time()
+    _prog["ev"] = 0
+    _avisar(0.02, "Conectando con Kommo...")
 
     log("Cargando catalogo de embudos y etapas...")
     etapas, nombres_embudo = cargar_catalogo_etapas()
     embudos = resolver_embudos(etapas, nombres_embudo)
     usuarios = cargar_usuarios()
+    _avisar(0.07, "Revisando las etapas de los embudos...")
 
     # Leads que hoy estan en las etapas pedidas (solo embudos filtrados)
     leads_permitidos = {}
@@ -756,6 +783,7 @@ def main():
                     f"en las etapas pedidas")
 
     log("Descargando eventos...")
+    _avisar(0.12, "Descargando eventos...")
     eventos = descargar_eventos()
     if not eventos:
         sys.exit("No se encontraron eventos en el rango solicitado.")
@@ -768,6 +796,7 @@ def main():
     # y etiquetas) + descarte de los que tienen vacio alguno de los
     # CAMPOS_REQUERIDOS. Se leen siempre, porque de ahi sale creacion_de_lead.
     log("Leyendo tarjetas de los leads...")
+    _avisar(0.75, "Leyendo tarjetas de los leads...")
     tarjetas = cargar_tarjetas({f["LEAD_ID"] for f in filas})
     etiquetas = {lid: t["etiquetas"] for lid, t in tarjetas.items()}
     filas, descartados = aplicar_campos(filas, tarjetas, embudos)
@@ -779,6 +808,7 @@ def main():
                  "Revisa que los nombres coincidan con los de Kommo.")
 
     df = construir_df(filas)
+    _avisar(0.95, "Guardando el archivo...")
 
     # ---- Salida ------------------------------------------------------
     generados = []
@@ -805,6 +835,41 @@ def main():
                          for c in sorted(embudos.values(),
                                          key=lambda x: x["orden"]))
     print(f"{resumen} | {time.time() - inicio:.1f}s")
+    _avisar(1.0, "Descarga terminada")
+
+
+def descargar_historial(fecha_desde, fecha_hasta, salida, al_avanzar=None):
+    """Descarga el historial para app.py y lo guarda en `salida`.
+
+    fecha_desde, fecha_hasta : textos 'AAAA-MM-DD' (el día final se incluye completo).
+    salida                   : ruta del Excel. Siempre es un solo archivo, aunque
+                               configuration.json tenga ARCHIVOS_SEPARADOS.
+    al_avanzar               : función(fraccion, texto) para mostrar el avance.
+
+    El archivo se escribe primero con otro nombre y solo reemplaza al anterior
+    si la descarga termina bien: si algo falla, el historial anterior queda
+    intacto. Si falla, lanza RuntimeError con el motivo.
+    """
+    global FECHA_DESDE, FECHA_HASTA, SALIDA, ARCHIVOS_SEPARADOS, AL_AVANZAR
+    salida = Path(salida)
+    temporal = salida.with_name(f"{salida.stem}.descargando{salida.suffix}")
+    anteriores = (FECHA_DESDE, FECHA_HASTA, SALIDA, ARCHIVOS_SEPARADOS, AL_AVANZAR)
+    FECHA_DESDE, FECHA_HASTA = fecha_desde, fecha_hasta
+    SALIDA, ARCHIVOS_SEPARADOS, AL_AVANZAR = str(temporal), False, al_avanzar
+    try:
+        try:
+            main()
+        except SystemExit as e:        # main() termina con sys.exit("motivo")
+            raise RuntimeError(str(e.code) if e.code else "La descarga se detuvo.") from None
+        os.replace(temporal, salida)   # reemplaza por completo al anterior
+        return salida
+    finally:
+        FECHA_DESDE, FECHA_HASTA, SALIDA, ARCHIVOS_SEPARADOS, AL_AVANZAR = anteriores
+        if temporal.exists():
+            try:
+                temporal.unlink()
+            except OSError:
+                pass
 
 
 if __name__ == "__main__":

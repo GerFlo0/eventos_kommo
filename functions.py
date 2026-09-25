@@ -1,14 +1,84 @@
 import json
 import locale
 import os
+import sys
 from datetime import date, datetime
 from pathlib import Path
 
 import pandas as pd
 
 # Carpeta raíz del proyecto (donde vive este archivo). Sirve para que los
-# scripts funcionen aunque se ejecuten desde otra carpeta.
-PROJECT_ROOT = Path(__file__).resolve().parent
+# scripts funcionen aunque se ejecuten desde otra carpeta. En el ejecutable
+# de PyInstaller es la carpeta donde se desempaquetan sus archivos
+# (sys._MEIPASS): ahí están json/configuration.json y json/secret.json.
+PROJECT_ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+
+# ---------------------------------------------------------------------------
+# Ejecutable (PyInstaller)
+# ---------------------------------------------------------------------------
+# True cuando el programa corre como ejecutable compilado con PyInstaller.
+ES_EJECUTABLE = bool(getattr(sys, "frozen", False))
+# Nombre de la carpeta de datos del programa cuando corre como ejecutable.
+NOMBRE_APP = "ReportesKommo"
+# Archivos que el programa GENERA y necesita conservar entre usos.
+RUTA_HISTORIAL = "tablas/historial_etapas_kommo.xlsx"
+ARCHIVO_PREFERENCIAS = "preferencias.json"
+
+
+def carpeta_datos() -> Path:
+    """Carpeta donde el programa guarda sus propios archivos (historial y
+    preferencias). El usuario no la elige.
+
+    - Desde el código fuente: la carpeta del proyecto (tablas/..., como siempre).
+    - Como ejecutable: la carpeta de datos del usuario
+      (%LOCALAPPDATA%\\ReportesKommo en Windows). No se usa la carpeta del
+      programa porque en modo "un archivo" es temporal (se borra al cerrar)
+      y en "Archivos de programa" Windows no permite escribir.
+    """
+    if not ES_EJECUTABLE:
+        return PROJECT_ROOT
+    base = (os.environ.get("LOCALAPPDATA") or os.environ.get("XDG_DATA_HOME")
+            or str(Path.home() / ".local" / "share"))
+    carpeta = Path(base) / NOMBRE_APP
+    carpeta.mkdir(parents=True, exist_ok=True)
+    return carpeta
+
+
+def ruta_historial() -> Path:
+    """Ubicación del historial de etapas que descarga y usa app.py."""
+    return carpeta_datos() / RUTA_HISTORIAL
+
+
+def _escribir_json_seguro(ruta, datos):
+    """Escribe un JSON sin dejarlo a medias si algo falla (archivo temporal + reemplazo)."""
+    ruta = Path(ruta)
+    ruta.parent.mkdir(parents=True, exist_ok=True)
+    temporal = ruta.with_name(ruta.name + ".tmp")
+    temporal.write_text(json.dumps(datos, indent=4, ensure_ascii=False, default=str),
+                        encoding="utf-8")
+    os.replace(temporal, ruta)
+
+
+def leer_preferencias() -> dict:
+    """Preferencias guardadas por app.py (fechas, carpeta de reportes).
+
+    Si el archivo no existe o está dañado, devuelve {} (se usan los valores
+    por defecto) en lugar de impedir que el programa abra.
+    """
+    ruta = carpeta_datos() / ARCHIVO_PREFERENCIAS
+    try:
+        datos = json.loads(ruta.read_text(encoding="utf-8"))
+        return datos if isinstance(datos, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def guardar_preferencias(cambios: dict) -> dict:
+    """Actualiza las preferencias con `cambios` y devuelve el resultado."""
+    prefs = leer_preferencias()
+    prefs.update(cambios)
+    _escribir_json_seguro(carpeta_datos() / ARCHIVO_PREFERENCIAS, prefs)
+    return prefs
 
 
 def ruta_proyecto(ruta) -> Path:
@@ -37,7 +107,14 @@ def resolver_lectura(ruta) -> Path:
 
 
 def ruta_para_mostrar(ruta) -> str:
-    """Ruta relativa a la carpeta actual, para imprimirla en consola."""
+    """Ruta relativa a la carpeta actual, para imprimirla en consola.
+
+    En el ejecutable se muestra la ruta completa: la "carpeta actual" es
+    desde donde se abrió el programa y una ruta relativa no le dice nada
+    al usuario.
+    """
+    if ES_EJECUTABLE:
+        return str(Path(ruta).resolve())
     try:
         return os.path.relpath(ruta)
     except ValueError:          # Windows: otra unidad de disco

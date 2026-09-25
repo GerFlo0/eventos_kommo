@@ -1,69 +1,77 @@
 # Descargador de eventos de Kommo
 
-Descarga los eventos de cambio de etapa de los leads de Kommo en un rango de fechas, genera un Excel con el historial y el tiempo que cada lead estuvo en cada etapa, y a partir de él arma reportes individuales por asesor y un reporte general de efectividad.
+Descarga los eventos de cambio de etapa de los leads de Kommo en un rango de fechas, genera un Excel con el historial y el tiempo que cada lead estuvo en cada etapa, y a partir de él arma los reportes individuales por asesor y un reporte general de efectividad. Todo se hace desde una ventana (`app.py`), que también se puede compilar como ejecutable para que otras personas generen reportes sin instalar Python.
 
 ## Requisitos previos
 
 * Python 3.14 o superior (es la versión que exige `setup_invironment.py`).
 * pip (gestor de paquetes de Python).
-* tkinter para la ventana de `app.py`. Viene incluido con Python en Windows y macOS; en Linux puede requerir instalar el paquete `python3-tk`.
+* tkinter para la ventana. Viene incluido con Python en Windows y macOS; en Linux puede requerir instalar el paquete `python3-tk`.
 
 ## Instalación y configuración
 
 1. Clonar el repositorio:
-```bash
+   ```bash
    git clone https://github.com/GerFlo0/eventos_kommo.git
    cd eventos_kommo
-```
+   ```
 
-2. Crear el entorno virtual, instalar dependencias y crear las carpetas necesarias:
-```bash
+2. Crear el entorno virtual, instalar dependencias, crear las carpetas necesarias y la plantilla de `json/secret.json`:
+   ```bash
    python setup_invironment.py
-```
+   ```
    Al terminar, el script indica cómo activar el entorno virtual.
 
-3. `setup_invironment.py` crea `json/secret.json` (no se sube al repositorio) con valores genéricos. Reemplaza los valores de `kommo`, la lista de `asesores` y el resto de la configuración con los datos de tu cuenta:
-```json
-   {
-       "kommo": {
-           "SUBDOMAIN": "tu_subdominio",
-           "TOKEN": "token_de_larga_duracion",
-           "PIPELINE_ID": {
-               "CIERRES": 1234567,
-               "VENTAS": 7654321
-           }
-       },
-         "asesores": ["NOMBRE ASESOR 1", "NOMBRE ASESOR 2"],
-       "estatus_negocio": ["ESTATUS 1", "ESTATUS 2"],
-       "query": "SELECT * FROM df WHERE LEAD_ID IN (SELECT LEAD_ID FROM df WHERE ETIQUETAS ILIKE $1)"
-   }
-```
-   El token también puede darse con la variable de entorno `KOMMO_TOKEN`, que tiene prioridad sobre el de `secret.json`. La consulta `query` se ejecuta sobre la tabla `df` (el historial) y recibe como `$1` el nombre del asesor entre comodines (`%nombre%`). `estatus_negocio` es la lista de estatus que se pueden elegir en la ventana de `app.py` (si la guardas con otra clave, ajusta `CLAVES_LISTA_ESTATUS` en `app.py`).
+3. Completar `json/secret.json` (no se sube al repositorio) con el token y subdominio de Kommo, los IDs de los embudos, la lista de `asesores`, la consulta `query` y la lista `estatus_negocio`. El token también puede darse con la variable de entorno `KOMMO_TOKEN`, que tiene prioridad sobre el de `secret.json`. La consulta `query` se ejecuta sobre la tabla `df` (el historial) y recibe como `$1` el nombre del asesor entre comodines (`%nombre%`).
 
-4. Ajustar `json/configuration.json` según lo que se necesite (rango de fechas, embudos, etapas, campos de la tarjeta, etc.). Los comentarios al inicio de `extract_data_from_kommo.py` explican cada opción.
+4. Ajustar `json/configuration.json` si hace falta (embudos, etapas, campos de la tarjeta, etc.). Los comentarios al inicio de `extract_data_from_kommo.py` explican cada opción. `FECHA_DESDE` y `FECHA_HASTA` solo se usan como valores iniciales de la ventana y al correr el extractor por consola.
 
 ## Uso
 
-Los scripts se ejecutan en este orden (pueden correrse desde cualquier carpeta):
-
 ```bash
-python extract_data_from_kommo.py   # 1. descarga de Kommo -> tablas/historial_etapas_kommo.xlsx
-python app.py                       # 2. ventana para generar los reportes individuales y el general
+python app.py
 ```
 
-En la ventana de `app.py` se eligen los estatus de negocio a incluir y si se usan todos los leads del historial o solo los creados a partir de `FECHA_DESDE`. Antes de generar, muestra cuántos leads cumplen los filtros. Al generar, se borran los reportes individuales anteriores de esa misma fecha para no mezclarlos con los nuevos.
+En la ventana:
 
-Las carpetas y archivos de los reportes se nombran con `FECHA_HASTA` de `configuration.json` (la fecha de hoy si es `null`). El tiempo transcurrido dentro de los reportes se sigue calculando hasta el momento en que se generan.
+1. **Periodo:** elegir `FECHA_DESDE` y `FECHA_HASTA` con el calendario.
+2. **Carpeta de reportes:** elegir dónde se guardarán. Todos los reportes (individuales y general) quedan en `<carpeta>/<FECHA_HASTA como AAAA-MM-DD>/`. Sin carpeta elegida no se puede descargar ni generar.
+3. **Descargar historial:** baja de Kommo el historial del periodo, con barra de avance. Cada descarga reemplaza por completo a la anterior; si la descarga falla, se conserva el historial anterior.
+4. **Filtros y nombres:** elegir los estatus de negocio, si se usan todos los leads o solo los creados a partir de `FECHA_DESDE`, la descripción del título y, opcionalmente, un texto al inicio del nombre de cada archivo.
+5. **Generar reportes.**
 
-`general_report.py` también puede correrse solo: acepta `--fecha dd/mm/aaaa` y `--descripcion "texto"` (ver `python general_report.py --help`).
+Las fechas y la carpeta elegidas se recuerdan para la próxima vez. Si se cambia el periodo después de descargar, la ventana avisa que el historial corresponde a otro periodo.
+
+Los scripts también se pueden usar por consola, como antes: `python extract_data_from_kommo.py` descarga con las fechas de `configuration.json`, y `general_report.py` acepta `--fecha`, `--descripcion`, `--prefijo` y `--prefijo-individuales` (ver `python general_report.py --help`).
+
+## Dónde guarda el programa sus archivos
+
+El historial (`historial_etapas_kommo.xlsx`) y las preferencias (`preferencias.json`) son archivos del programa; el usuario no elige su ubicación:
+
+* Desde el código fuente: dentro del proyecto (`tablas/historial_etapas_kommo.xlsx` y `preferencias.json`).
+* Como ejecutable: en la carpeta de datos del usuario, `%LOCALAPPDATA%\ReportesKommo` en Windows. No se guardan dentro del ejecutable porque en modo "un archivo" se desempaqueta en una carpeta temporal que se borra al cerrar, y en "Archivos de programa" Windows no permite escribir.
+
+## Compilar el ejecutable
+
+Con el entorno virtual activado y `json/secret.json` completo:
+
+```bash
+pip install pyinstaller
+python compilar.py            # un solo archivo: dist/ReportesKommo.exe
+python compilar.py --carpeta  # una carpeta: dist/ReportesKommo/ (abre más rápido)
+```
+
+Hay que compilar en el mismo sistema operativo donde se va a usar (para un `.exe` de Windows, compilar en Windows). El ejecutable de un solo archivo tarda unos segundos en abrir porque se desempaqueta cada vez.
+
+**Importante:** el ejecutable lleva dentro `secret.json`, incluido el token de Kommo, y se puede extraer con herramientas comunes. Compártelo solo con personas de confianza y usa un token que puedas revocar si el archivo circula de más.
 
 ## Archivos generados
 
-* `tablas/historial_etapas_kommo.xlsx`: hojas HISTORIAL (un renglón por cambio de etapa, con la fecha de creación del lead en `creacion_de_lead`) y PIVOTE (un renglón por lead, con la primera fecha en cada etapa).
-* `tablas/reportes/individuales/<mes>/<día>/reporte_estado_leads_<asesor>.xlsx`: un reporte por asesor (mes y día de `FECHA_HASTA`).
-* `tablas/reportes/generales/<mes>/<día>/reporte_general_<aaaa-mm-dd>.xlsx`: reporte general.
+* Historial: hojas HISTORIAL (un renglón por cambio de etapa, con `creacion_de_lead`) y PIVOTE (un renglón por lead, con la primera fecha en cada etapa).
+* `<carpeta>/<AAAA-MM-DD>/reporte_individual_dictaminados_<asesor>.xlsx`: un reporte por asesor.
+* `<carpeta>/<AAAA-MM-DD>/reporte_general_dictaminados_<AAAA-MM-DD>.xlsx`: reporte general, con las hojas Efectividad y Detalle completo.
 
-La carpeta `tablas/` está excluida del repositorio porque contiene datos de leads.
+Si se escribió un texto de inicio en la ventana, va antes del nombre (p. ej. `ENERO_reporte_general_dictaminados_2026-09-23.xlsx`).
 
 ## Pruebas
 
