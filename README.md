@@ -35,39 +35,43 @@ python app.py
 En la ventana:
 
 1. **Periodo:** elegir `FECHA_DESDE` y `FECHA_HASTA` con el calendario.
-2. **Carpeta de reportes:** elegir dónde se guardarán. Todos los reportes (individuales y general) quedan en `<carpeta>/<FECHA_HASTA como AAAA-MM-DD>/`. Sin carpeta elegida no se puede descargar ni generar.
-3. **Descargar historial:** baja de Kommo el historial del periodo, con barra de avance. Cada descarga reemplaza por completo a la anterior; si la descarga falla, se conserva el historial anterior.
+2. **Carpeta de reportes:** elegir dónde se guardarán. Todo lo de un periodo (historial, reportes individuales y general) queda en `<carpeta>/<FECHA_HASTA como AAAA-MM-DD>/`. Sin carpeta elegida no se puede descargar ni generar.
+3. **Descargar historial:** baja de Kommo el historial del periodo, con barra de avance, y lo guarda en esa misma carpeta del periodo junto con su `historial_etapas_kommo.info.json` (fecha de descarga y periodo). Si ya había un historial en esa carpeta, se reemplaza; los de otros periodos no se tocan. Si la descarga falla, se conserva el que había.
 4. **Filtros y nombres:** elegir los estatus de negocio, si se usan todos los leads o solo los creados a partir de `FECHA_DESDE`, la descripción del título y, opcionalmente, un texto al inicio del nombre de cada archivo.
 5. **Generar reportes.**
 
-Las fechas y la carpeta elegidas se recuerdan para la próxima vez. Si se cambia el periodo después de descargar, la ventana avisa que el historial corresponde a otro periodo.
+Las fechas y la carpeta elegidas se recuerdan para la próxima vez. Al abrir el programa, o al cambiar la carpeta o `FECHA_HASTA`, se usa el historial que ya exista en `<carpeta>/<FECHA_HASTA>/`; si no hay, hay que descargarlo. Si se cambia `FECHA_DESDE` después de descargar, la ventana avisa que el historial corresponde a otro periodo.
 
 Los scripts también se pueden usar por consola, como antes: `python extract_data_from_kommo.py` descarga con las fechas de `configuration.json`, y `general_report.py` acepta `--fecha`, `--descripcion`, `--prefijo` y `--prefijo-individuales` (ver `python general_report.py --help`).
 
-## Dónde guarda el programa sus archivos
+## Dónde quedan los archivos
 
-El historial (`historial_etapas_kommo.xlsx`) y las preferencias (`preferencias.json`) son archivos del programa; el usuario no elige su ubicación:
-
-* Desde el código fuente: dentro del proyecto (`tablas/historial_etapas_kommo.xlsx` y `preferencias.json`).
-* Como ejecutable: en la carpeta de datos del usuario, `%LOCALAPPDATA%\ReportesKommo` en Windows. No se guardan dentro del ejecutable porque en modo "un archivo" se desempaqueta en una carpeta temporal que se borra al cerrar, y en "Archivos de programa" Windows no permite escribir.
+* **Historial y reportes:** en la carpeta de reportes elegida, dentro de la subcarpeta de cada periodo: `<carpeta>/<AAAA-MM-DD>/`.
+* **Preferencias** (`preferencias.json`: carpeta y fechas elegidas): el usuario no elige su ubicación. Desde el código fuente quedan en la carpeta del proyecto; como ejecutable, en `%LOCALAPPDATA%\ReportesKommo` (Windows), porque la carpeta del programa puede no tener permisos de escritura y se reemplaza al actualizarlo.
+* El extractor por consola (`python extract_data_from_kommo.py`) sigue guardando en `tablas/historial_etapas_kommo.xlsx`, como antes.
 
 ## Compilar el ejecutable
 
-Con el entorno virtual activado y `json/secret.json` completo:
+Con el entorno virtual activado y `json/secret.json` completo, **en Windows** (PyInstaller solo genera programas para el sistema donde se ejecuta):
 
 ```bash
 pip install pyinstaller
-python compilar.py            # un solo archivo: dist/ReportesKommo.exe
-python compilar.py --carpeta  # una carpeta: dist/ReportesKommo/ (abre más rápido)
+python compilar.py
 ```
 
-Hay que compilar en el mismo sistema operativo donde se va a usar (para un `.exe` de Windows, compilar en Windows). El ejecutable de un solo archivo tarda unos segundos en abrir porque se desempaqueta cada vez.
+Se genera en modo carpeta:
 
-**Importante:** el ejecutable lleva dentro `secret.json`, incluido el token de Kommo, y se puede extraer con herramientas comunes. Compártelo solo con personas de confianza y usa un token que puedas revocar si el archivo circula de más.
+* `dist/ReportesKommo/`: la carpeta del programa, con `ReportesKommo.exe` y la subcarpeta `_internal/`.
+* `dist/ReportesKommo.zip`: la misma carpeta comprimida, para compartir.
+
+Quien lo reciba descomprime el `.zip` y abre `ReportesKommo.exe`. El `.exe` no funciona si se saca de su carpeta (necesita `_internal/` junto a él); para tenerlo a mano, crear un acceso directo.
+
+**Importante:** el programa lleva dentro `secret.json`, incluido el token de Kommo, y se puede extraer con herramientas comunes. Compártelo solo con personas de confianza y usa un token que puedas revocar si el archivo circula de más.
 
 ## Archivos generados
 
-* Historial: hojas HISTORIAL (un renglón por cambio de etapa, con `creacion_de_lead`) y PIVOTE (un renglón por lead, con la primera fecha en cada etapa).
+* `<carpeta>/<AAAA-MM-DD>/historial_etapas_kommo.xlsx`: hojas HISTORIAL (un renglón por cambio de etapa, con `creacion_de_lead`) y PIVOTE (un renglón por lead, con la primera fecha en cada etapa).
+* `<carpeta>/<AAAA-MM-DD>/historial_etapas_kommo.info.json`: cuándo se descargó el historial y con qué periodo.
 * `<carpeta>/<AAAA-MM-DD>/reporte_individual_dictaminados_<asesor>.xlsx`: un reporte por asesor.
 * `<carpeta>/<AAAA-MM-DD>/reporte_general_dictaminados_<AAAA-MM-DD>.xlsx`: reporte general, con las hojas Efectividad y Detalle completo.
 

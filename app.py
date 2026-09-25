@@ -6,8 +6,11 @@ En la ventana se elige:
   - el periodo (FECHA_DESDE y FECHA_HASTA) con un calendario;
   - la carpeta donde se guardan los reportes: todos quedan en
     <carpeta>/<FECHA_HASTA como AAAA-MM-DD>/;
-  - descargar el historial de Kommo (con barra de avance). Se guarda en la
-    carpeta de datos del programa y cada descarga reemplaza a la anterior;
+  - descargar el historial de Kommo (con barra de avance). Se guarda en esa
+    misma carpeta del periodo, junto con su .info.json; si ya había uno ahí,
+    se reemplaza (los de otros periodos no se tocan). Al abrir el programa o
+    cambiar la carpeta o FECHA_HASTA, se usa el historial que haya en
+    <carpeta>/<FECHA_HASTA>/, si existe;
   - qué estatus de negocio incluir (lista de secret.json);
   - si usar todos los leads del historial o solo los creados a partir de
     FECHA_DESDE;
@@ -138,6 +141,17 @@ def nombre_carpeta_reportes(fecha):
     return f"{fecha:%Y-%m-%d}"
 
 
+# Nombre del historial dentro de la carpeta del periodo.
+NOMBRE_HISTORIAL = "historial_etapas_kommo.xlsx"
+
+
+def ruta_historial(carpeta_reportes, fecha_hasta):
+    """Ubicación real del historial de un periodo:
+    <carpeta_reportes>/<FECHA_HASTA como AAAA-MM-DD>/historial_etapas_kommo.xlsx.
+    Todo lo que lee, escribe o describe el historial usa esta función."""
+    return Path(carpeta_reportes) / nombre_carpeta_reportes(fecha_hasta) / NOMBRE_HISTORIAL
+
+
 def generar_reportes(df, secret, fecha, descripcion="", prefijo_individual="", prefijo_general="",
                      carpeta_reportes=None):
     """Reportes individuales de cada asesor + reporte general.
@@ -192,7 +206,7 @@ def generar_reportes(df, secret, fecha, descripcion="", prefijo_individual="", p
                                    prefijo_individuales=prefijo_individual)
 
 
-# ---- Historial de etapas (archivo del programa) ---------------------------
+# ---- Historial de etapas (en la carpeta del periodo) ------------------------
 def ruta_info_historial(ruta_historial):
     """Datos de la última descarga, junto al historial (…historial_etapas_kommo.info.json)."""
     ruta = Path(ruta_historial)
@@ -262,8 +276,9 @@ def cargar_datos():
                    or hoy.replace(day=1))
     fecha_hasta = _fecha_de_texto(prefs.get("fecha_hasta")) or fn.fecha_reportes()
     carpeta = prefs.get("carpeta_reportes") or None
-    ruta = fn.ruta_historial()
-    historial, aviso = cargar_historial(ruta)
+    historial, aviso = None, None
+    if carpeta:   # el historial del periodo guardado, si ya se descargó
+        historial, aviso = cargar_historial(ruta_historial(carpeta, fecha_hasta))
     return {
         "secret": secret,
         "estatus": estatus,
@@ -271,7 +286,6 @@ def cargar_datos():
         "fecha": fecha_hasta,
         "fecha_desde": fecha_desde,
         "carpeta_reportes": carpeta,
-        "ruta_historial": ruta,
         "aviso_inicial": aviso,
     }
 
@@ -480,12 +494,11 @@ class _EscritorCola:
 
 class App(tk.Tk):
     def __init__(self, secret, estatus, historial, fecha, fecha_desde, carpeta_reportes=None,
-                 ruta_historial=None, aviso_inicial=None):
+                 aviso_inicial=None):
         super().__init__()
         self.secret, self.estatus, self.historial = secret, estatus, historial
         self.fecha, self.fecha_desde = fecha, fecha_desde
         self.carpeta_reportes = carpeta_reportes
-        self.ruta_historial = Path(ruta_historial or fn.ruta_historial())
         self._descargando = False
         self._cola = None
         self.title("Reportes de leads - Kommo")
@@ -653,17 +666,39 @@ class App(tk.Tk):
         self.requisito.config(text=requisito)
         if self.carpeta_reportes:
             destino = Path(self.carpeta_reportes) / nombre_carpeta_reportes(self.selector_hasta.get())
-            self.destino.config(text=f"Los reportes se guardarán en: {destino}")
+            self.destino.config(text=f"Los reportes y el historial se guardarán en: {destino}")
         else:
             self.destino.config(text="")
 
+    @property
+    def ruta_historial(self):
+        """Ubicación real del historial del periodo elegido (None sin carpeta)."""
+        if not self.carpeta_reportes:
+            return None
+        return ruta_historial(self.carpeta_reportes, self.fecha)
+
+    def _recargar_historial(self):
+        """Usa el historial que haya en <carpeta>/<FECHA_HASTA>/ (o ninguno)."""
+        ruta = self.ruta_historial
+        self.historial, aviso = cargar_historial(ruta) if ruta else (None, None)
+        if aviso:
+            self._escribir(f"Aviso: {aviso}\n")
+        self._actualizar_info_historial()
+        self._actualizar_conteo()
+        self._avisar_estatus_no_listados()
+        self._actualizar_estado()
+
     def _al_cambiar_fechas(self):
+        cambio_hasta = self.selector_hasta.get() != self.fecha
         self.fecha_desde = self.selector_desde.get()
         self.fecha = self.selector_hasta.get()
         fn.guardar_preferencias({"fecha_desde": self.fecha_desde.isoformat(),
                                  "fecha_hasta": self.fecha.isoformat()})
         self._actualizar_texto_desde()
         self._actualizar_nombres()
+        if cambio_hasta:              # otra carpeta de periodo: otro historial
+            self._recargar_historial()
+            return
         self._actualizar_conteo()
         self._actualizar_info_historial()
         self._actualizar_estado()
@@ -685,7 +720,7 @@ class App(tk.Tk):
         self.carpeta_reportes = str(Path(elegida))
         self.texto_carpeta.set(self.carpeta_reportes)
         fn.guardar_preferencias({"carpeta_reportes": self.carpeta_reportes})
-        self._actualizar_estado()
+        self._recargar_historial()
 
     def _abrir_carpeta(self):
         if not self.carpeta_reportes:
@@ -697,21 +732,27 @@ class App(tk.Tk):
             messagebox.showerror("No se pudo abrir la carpeta", str(e))
 
     def _actualizar_info_historial(self):
+        ruta = self.ruta_historial
+        if ruta is None:
+            self.info_historial.config(text="Elige la carpeta de reportes; el historial se "
+                                            "descarga en la carpeta de cada periodo.")
+            self.aviso_historial.config(text="")
+            return
         if self.historial is None:
-            self.info_historial.config(text="Aún no hay historial descargado.")
+            self.info_historial.config(text=f"No hay historial para este periodo. Se descargará en:\n{ruta}")
             self.aviso_historial.config(text="")
             return
         leads = self.historial["LEAD_ID"].nunique()
-        info = leer_info_historial(self.ruta_historial)
+        info = leer_info_historial(ruta)
         if info is None:
-            self.info_historial.config(text=f"Historial guardado: {leads} leads, "
-                                            f"{len(self.historial)} movimientos (periodo desconocido).")
+            self.info_historial.config(text=f"Historial: {leads} leads, {len(self.historial)} "
+                                            f"movimientos (periodo desconocido).\n{ruta}")
             self.aviso_historial.config(text="")
             return
         self.info_historial.config(
             text=f"Descargado el {info['descargado']:%d/%m/%Y %H:%M}: periodo "
                  f"{info['fecha_desde']:%d/%m/%Y} – {info['fecha_hasta']:%d/%m/%Y}, "
-                 f"{leads} leads, {len(self.historial)} movimientos.")
+                 f"{leads} leads, {len(self.historial)} movimientos.\n{ruta}")
         distinto = (info["fecha_desde"], info["fecha_hasta"]) != (self.fecha_desde, self.fecha)
         self.aviso_historial.config(
             text="El periodo elegido no coincide con el del historial descargado; "
@@ -726,9 +767,20 @@ class App(tk.Tk):
                            f"secret.json y sus leads no se pueden elegir: {', '.join(no_listados)}\n")
 
     # --- descarga del historial -----------------------------------------------
-    def _descargar(self):
+    def _carpeta_disponible(self):
+        """Avisa y devuelve False si no hay carpeta o si ya no existe (p. ej. USB desconectada)."""
         if not self.carpeta_reportes:
             messagebox.showwarning("Falta la carpeta", "Elige primero la carpeta de reportes.")
+            return False
+        if not Path(self.carpeta_reportes).is_dir():
+            messagebox.showerror("La carpeta no existe",
+                                 f"No se encontró la carpeta de reportes:\n{self.carpeta_reportes}\n\n"
+                                 "Conéctala de nuevo o elige otra.")
+            return False
+        return True
+
+    def _descargar(self):
+        if not self._carpeta_disponible():
             return
         desde, hasta = self.selector_desde.get(), self.selector_hasta.get()
         if desde > hasta:
@@ -750,16 +802,19 @@ class App(tk.Tk):
         self._pintar_barra()
         self.etapa_descarga.config(text="Preparando...")
         self._cola = queue.Queue()
+        # Destino fijo para toda la descarga: la carpeta del periodo elegido.
+        destino = self._ruta_descarga = self.ruta_historial
+        self._escribir(f"Se guardará en: {destino}\n")
 
         def al_avanzar(fraccion, texto):
             self._cola.put(("avance", fraccion, texto))
 
         def trabajo():
-            escritor = _EscritorCola(self._cola, self.ruta_historial)
+            escritor = _EscritorCola(self._cola, destino)
             try:
                 with contextlib.redirect_stdout(escritor), contextlib.redirect_stderr(escritor):
                     extractor.descargar_historial(desde.isoformat(), hasta.isoformat(),
-                                                  self.ruta_historial, al_avanzar=al_avanzar)
+                                                  destino, al_avanzar=al_avanzar)
                 self._cola.put(("fin", desde, hasta))
             except BaseException as e:  # noqa: BLE001 - se informa en la ventana
                 self._cola.put(("error", e))
@@ -808,12 +863,12 @@ class App(tk.Tk):
         self._descargando = False
         if resultado[0] == "fin":
             _, desde, hasta = resultado
-            historial, aviso = cargar_historial(self.ruta_historial)
+            historial, aviso = cargar_historial(self._ruta_descarga)
             if historial is None:
                 self._fallo_descarga(aviso or "No se pudo leer el historial descargado.")
             else:
                 self.historial = historial
-                guardar_info_historial(self.ruta_historial, desde, hasta, historial)
+                guardar_info_historial(self._ruta_descarga, desde, hasta, historial)
                 self._mostrado = 1.0
                 self._pintar_barra()
                 self.etapa_descarga.config(text="Descarga terminada.")
@@ -885,8 +940,7 @@ class App(tk.Tk):
         _Consola(self).write(texto)
 
     def _generar(self):
-        if not self.carpeta_reportes:
-            messagebox.showwarning("Falta la carpeta", "Elige primero la carpeta de reportes.")
+        if not self._carpeta_disponible():
             return
         if self.historial is None:
             messagebox.showwarning("Sin historial", "Descarga primero el historial.")

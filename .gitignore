@@ -13,3 +13,9 @@ secret.json
 test.py
 
 parameters.json
+
+dist
+
+build
+
+tests

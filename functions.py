@@ -20,20 +20,19 @@ PROJECT_ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 ES_EJECUTABLE = bool(getattr(sys, "frozen", False))
 # Nombre de la carpeta de datos del programa cuando corre como ejecutable.
 NOMBRE_APP = "ReportesKommo"
-# Archivos que el programa GENERA y necesita conservar entre usos.
-RUTA_HISTORIAL = "tablas/historial_etapas_kommo.xlsx"
+# Preferencias de app.py (carpeta de reportes y fechas elegidas). El historial
+# NO se guarda aquí: app.py lo descarga junto a los reportes de cada periodo.
 ARCHIVO_PREFERENCIAS = "preferencias.json"
 
 
 def carpeta_datos() -> Path:
-    """Carpeta donde el programa guarda sus propios archivos (historial y
-    preferencias). El usuario no la elige.
+    """Carpeta donde el programa guarda sus preferencias. El usuario no la elige.
 
-    - Desde el código fuente: la carpeta del proyecto (tablas/..., como siempre).
+    - Desde el código fuente: la carpeta del proyecto.
     - Como ejecutable: la carpeta de datos del usuario
-      (%LOCALAPPDATA%\\ReportesKommo en Windows). No se usa la carpeta del
-      programa porque en modo "un archivo" es temporal (se borra al cerrar)
-      y en "Archivos de programa" Windows no permite escribir.
+      (%LOCALAPPDATA%\\ReportesKommo en Windows), porque la carpeta del
+      programa puede no tener permisos de escritura (p. ej. si se copia a
+      "Archivos de programa") y se reemplaza al actualizar el programa.
     """
     if not ES_EJECUTABLE:
         return PROJECT_ROOT
@@ -42,11 +41,6 @@ def carpeta_datos() -> Path:
     carpeta = Path(base) / NOMBRE_APP
     carpeta.mkdir(parents=True, exist_ok=True)
     return carpeta
-
-
-def ruta_historial() -> Path:
-    """Ubicación del historial de etapas que descarga y usa app.py."""
-    return carpeta_datos() / RUTA_HISTORIAL
 
 
 def _escribir_json_seguro(ruta, datos):
