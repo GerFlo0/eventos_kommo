@@ -35,7 +35,8 @@ from openpyxl.utils import get_column_letter
 from openpyxl.formatting.rule import CellIsRule
 
 import functions as fn
-from individual_reports import MESES, NOMBRE_ARCHIVO_INDIVIDUAL, clasificar_etapa, normalizar
+from individual_reports import (COL_MOTIVO, MESES, NOMBRE_ARCHIVO_INDIVIDUAL, categoria_lead,
+                                normalizar)
 
 CARPETA_INDIVIDUALES = "tablas/reportes/individuales"
 CARPETA_GENERALES = "tablas/reportes/generales"
@@ -145,7 +146,10 @@ def leer_reportes_individuales(carpeta, verbose=True, prefijo=""):
         raise ValueError(f"Ningún archivo de {carpeta} tiene la hoja '{HOJA_ESTADO}'.")
 
     datos = pd.concat(tablas, ignore_index=True)
-    datos["CATEGORIA"] = datos["ETAPA_ACTUAL"].map(clasificar_etapa).map(COLUMNA_POR_CATEGORIA)
+    # "Sin Capacidad": etapa SIN CAPACIDAD o MOTIVO LEAD PERDIDO = SIN CAPACIDAD
+    motivos = datos[COL_MOTIVO] if COL_MOTIVO in datos.columns else [None] * len(datos)
+    datos["CATEGORIA"] = [COLUMNA_POR_CATEGORIA.get(categoria_lead(e, m))
+                          for e, m in zip(datos["ETAPA_ACTUAL"], motivos)]
     return datos
 
 
@@ -181,9 +185,11 @@ def _hoja_detalle(wb, datos, orden_asesores, titulo):
         ("Etapa actual (Kommo)", "ETAPA_ACTUAL", 22, None),
         ("Categoría", "CATEGORIA", 16, None),
         ("¿Ganado?", None, 10, None),
+        ("Embudo actual", "EMBUDO_ACTUAL", 14, None),
         ("Creación del lead", "creacion_de_lead", 20, FORMATO_FECHA),
         ("ESTATUS DE NEGOCIO", "ESTATUS DE NEGOCIO", 22, None),
         ("FECHA DICTAMEN", "FECHA DICTAMEN", 16, FORMATO_SOLO_FECHA),
+        (COL_MOTIVO, COL_MOTIVO, 24, None),
         ("Fecha último movimiento", "FECHA_ULTIMO_MOVIMIENTO", 20, FORMATO_FECHA),
         ("Tiempo transcurrido", "TIEMPO_TRANSCURRIDO", 16, None),
         ("Total movimientos", "TOTAL_MOVIMIENTOS", 12, None),

@@ -5,31 +5,27 @@
         "INCLUIR_LEAD_ADDED": true,
         "SALIDA": "tablas/historial_etapas_kommo.xlsx",
         "ARCHIVOS_SEPARADOS": false,
-        "FILTRO_POR_ETAPA_ACTUAL": true,
+        "ETIQUETA_LEADS": "CIERRES",
         "CAMPOS_TARJETA": [
             "ESTATUS DE NEGOCIO",
-            "FECHA DICTAMEN"
+            "FECHA DICTAMEN",
+            "MONTO OTORGADO",
+            "MOTIVO LEAD PERDIDO"
         ],
-        "CAMPOS_REQUERIDOS": [
-            "ESTATUS DE NEGOCIO",
-            "FECHA DICTAMEN"
+        "CAMPOS_REQUERIDOS": [],
+        "CAMPOS_DINERO": [
+            "MONTO OTORGADO"
         ],
         "EMBUDOS": [
             {
                 "NOMBRE": "CIERRES",
-                "CLAVE_SECRET": "CIERRES",
-                "TODAS_LAS_ETAPAS": true
+                "ID": 13971251,
+                "CLAVE_SECRET": "CIERRES"
             },
             {
                 "NOMBRE": "VENTAS",
-                "CLAVE_SECRET": "VENTAS",
-                "TODAS_LAS_ETAPAS": false,
-                "ETAPAS_EXACTAS": [
-                    "SIN CAPACIDAD"
-                ],
-                "ETAPAS_CONTIENEN": [
-                    "20"
-                ]
+                "ID": 11623227,
+                "CLAVE_SECRET": "VENTAS"
             }
         ],
         "performance": {

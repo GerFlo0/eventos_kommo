@@ -88,6 +88,39 @@ def clasificar_etapa(etapa):
     return _MAPA_ETAPAS.get(etapa_norm, CATEGORIA_OTROS)
 
 
+COL_MOTIVO = "MOTIVO LEAD PERDIDO"
+CATEGORIA_SIN_CAPACIDAD = "Sin capacidad"
+
+
+def categoria_lead(etapa, motivo=None):
+    """Categoría de un lead: 'Sin capacidad' si está en la etapa SIN CAPACIDAD
+    (por su etapa) o si su MOTIVO LEAD PERDIDO dice SIN CAPACIDAD; si no, la
+    que corresponde a su etapa."""
+    if "sin capacidad" in normalizar(motivo):
+        return CATEGORIA_SIN_CAPACIDAD
+    return clasificar_etapa(etapa)
+
+
+# Títulos de la hoja HISTORIAL (extract_data_from_kommo.py) -> nombres que
+# usan los reportes y la consulta de secret.json. Los demás no cambian.
+COLUMNAS_HISTORIAL_INTERNAS = {
+    "LEAD ID": "LEAD_ID",
+    "FECHA CREACION DE LEAD": "creacion_de_lead",
+    "ETAPA ANTERIOR": "ETAPA_ANTERIOR",
+    "FECHA EVENTO": "FECHA",
+    "DIAS EN ETAPA ANTERIOR": "DIAS_EN_ETAPA_ANTERIOR",
+}
+
+
+def normalizar_columnas_historial(df):
+    """Traduce los títulos del HISTORIAL a los nombres internos.
+
+    Acepta también historiales con los nombres anteriores (no los toca).
+    """
+    return df.rename(columns={k: v for k, v in COLUMNAS_HISTORIAL_INTERNAS.items()
+                              if k in df.columns})
+
+
 def formato_tiempo(dias):
     """Convierte días decimales a texto legible, p. ej. 12.4 -> '12 d 10 h'."""
     if dias is None or pd.isna(dias):
@@ -97,12 +130,25 @@ def formato_tiempo(dias):
     return f"{d} d {h} h"
 
 
+def etapa_con_embudo(etapa, embudo=None):
+    """'Oferta' + 'CIERRES' -> 'CIERRES: Oferta'. Sin embudo, solo la etapa."""
+    if etapa is None or pd.isna(etapa):
+        return None
+    if embudo is None or pd.isna(embudo) or not str(embudo).strip():
+        return str(etapa)
+    return f"{embudo}: {etapa}"
+
+
 def construir_ruta(grupo):
-    """Ruta de etapas de un lead: 'Contactado → oferta (01/09/2026 09:20) → ...'."""
+    """Ruta de un lead con embudo y etapa:
+    '(sin etapa previa) → VENTAS: Nuevo (01/09/2026 09:20) → CIERRES: Oferta (...)'."""
+    embudos = grupo["EMBUDO"] if "EMBUDO" in grupo else [None] * len(grupo)
     primera_anterior = grupo["ETAPA_ANTERIOR"].iloc[0]
-    partes = [str(primera_anterior) if pd.notna(primera_anterior) else "(sin etapa previa)"]
-    for etapa, fecha in zip(grupo["ETAPA_NUEVA"], grupo["FECHA"]):
-        partes.append(f"{etapa} ({fecha:%d/%m/%Y %H:%M})")
+    emb_anterior = grupo["EMBUDO_ANTERIOR"].iloc[0] if "EMBUDO_ANTERIOR" in grupo else None
+    partes = [etapa_con_embudo(primera_anterior, emb_anterior) if pd.notna(primera_anterior)
+              else "(sin etapa previa)"]
+    for etapa, fecha, embudo in zip(grupo["ETAPA_NUEVA"], grupo["FECHA"], embudos):
+        partes.append(f"{etapa_con_embudo(etapa, embudo)} ({fecha:%d/%m/%Y %H:%M})")
     return " → ".join(partes)
 
 
@@ -136,7 +182,8 @@ def preparar_historial(df, fecha_corte):
         SELECT *,
             ROW_NUMBER() OVER w                 AS PASO,
             COUNT(*) OVER (PARTITION BY LEAD_ID) AS TOTAL_MOVIMIENTOS,
-            LEAD(FECHA) OVER w                  AS FECHA_SIGUIENTE
+            LEAD(FECHA) OVER w                  AS FECHA_SIGUIENTE,
+            LAG(EMBUDO) OVER w                  AS EMBUDO_ANTERIOR
         FROM historial
         WINDOW w AS (PARTITION BY LEAD_ID ORDER BY FECHA)
         ORDER BY LEAD_ID, FECHA
@@ -158,6 +205,8 @@ def generar_reporte(df, fecha_corte):
     """Devuelve un dict con los DataFrames de cada hoja del reporte."""
     df = df.copy()
     df["FECHA"] = pd.to_datetime(df["FECHA"])
+    if "EMBUDO" not in df.columns:      # historial sin embudo: las rutas van sin él
+        df["EMBUDO"] = None
     hist = preparar_historial(df, fecha_corte)
     for col in COLUMNAS_OPCIONALES:
         if col not in hist.columns:
@@ -165,7 +214,8 @@ def generar_reporte(df, fecha_corte):
 
     # --- Estado actual: último movimiento de cada lead -----------------------
     ultimos = hist[hist["ES_ULTIMO_MOVIMIENTO"]].copy()
-    ultimos["ESTADO_ACTUAL"] = ultimos["ETAPA_NUEVA"].map(clasificar_etapa)
+    motivos = ultimos[COL_MOTIVO] if COL_MOTIVO in ultimos.columns else [None] * len(ultimos)
+    ultimos["ESTADO_ACTUAL"] = [categoria_lead(e, m) for e, m in zip(ultimos["ETAPA_NUEVA"], motivos)]
     ultimos["DIAS_DESDE_ULTIMO_MOVIMIENTO"] = (
         (pd.Timestamp(fecha_corte) - ultimos["FECHA"]).dt.total_seconds() / 86400
     ).round(2)
@@ -173,7 +223,8 @@ def generar_reporte(df, fecha_corte):
 
     # Las etiquetas pueden venir solo en algunos registros: se toma la última no vacía.
     etiquetas = hist.groupby("LEAD_ID")["ETIQUETAS"].last()
-    rutas = hist.groupby("LEAD_ID")[["ETAPA_ANTERIOR", "ETAPA_NUEVA", "FECHA"]].apply(construir_ruta)
+    rutas = hist.groupby("LEAD_ID")[["ETAPA_ANTERIOR", "ETAPA_NUEVA", "FECHA", "EMBUDO",
+                                     "EMBUDO_ANTERIOR"]].apply(construir_ruta)
     ultimos["ETIQUETAS"] = ultimos["LEAD_ID"].map(etiquetas)
     ultimos["RUTA"] = ultimos["LEAD_ID"].map(rutas)
 
@@ -183,12 +234,13 @@ def generar_reporte(df, fecha_corte):
     columnas_estado = [
         "LEAD_ID", "creacion_de_lead","ESTADO_ACTUAL", "ETAPA_NUEVA", "FECHA",
         "DIAS_DESDE_ULTIMO_MOVIMIENTO", "TIEMPO_TRANSCURRIDO", "ETAPA_ANTERIOR",
-        "ESTATUS DE NEGOCIO", "FECHA DICTAMEN", "TOTAL_MOVIMIENTOS", "RUTA",
+        "ESTATUS DE NEGOCIO", "FECHA DICTAMEN", COL_MOTIVO, "TOTAL_MOVIMIENTOS", "RUTA",
         "ETIQUETAS", "EMBUDO",
     ]
     estado = (
         ultimos[[c for c in columnas_estado if c in ultimos.columns]]
-        .rename(columns={"ETAPA_NUEVA": "ETAPA_ACTUAL", "FECHA": "FECHA_ULTIMO_MOVIMIENTO"})
+        .rename(columns={"ETAPA_NUEVA": "ETAPA_ACTUAL", "FECHA": "FECHA_ULTIMO_MOVIMIENTO",
+                         "EMBUDO": "EMBUDO_ACTUAL"})
         .reset_index(drop=True)
     )
 
@@ -218,6 +270,7 @@ def generar_reporte(df, fecha_corte):
         "LEAD_ID", "PASO", "ETAPA_ANTERIOR", "ETAPA_NUEVA", "FECHA",
         "DIAS_EN_ETAPA_ANTERIOR", "DIAS_EN_ETAPA_NUEVA",
         "ESTADO_ACTUAL_LEAD", "ES_ULTIMO_MOVIMIENTO",
+        "EMBUDO", "EMBUDO_ANTERIOR",          # para mostrar "EMBUDO: etapa" en los bloques
     ]].reset_index(drop=True)
 
     return {"Resumen": resumen, "Estado actual": estado, "Historial": historial}
@@ -266,8 +319,8 @@ HOJA_POR_LEAD = "Historial por lead"
 # Columnas que se muestran en la hoja "Estado actual" (el DataFrame interno
 # conserva más datos porque los usan el Resumen y el Historial por lead).
 COLUMNAS_HOJA_ESTADO = [
-    "LEAD_ID", "creacion_de_lead", "ETAPA_ACTUAL", "ESTATUS DE NEGOCIO", "FECHA DICTAMEN",
-    "FECHA_ULTIMO_MOVIMIENTO",
+    "LEAD_ID", "creacion_de_lead", "EMBUDO_ACTUAL", "ETAPA_ACTUAL", "ESTATUS DE NEGOCIO",
+    "FECHA DICTAMEN", COL_MOTIVO, "FECHA_ULTIMO_MOVIMIENTO",
     "TIEMPO_TRANSCURRIDO", "TOTAL_MOVIMIENTOS", "RUTA",
 ]
 COLUMNAS_BLOQUE = [
@@ -299,7 +352,8 @@ def _escribir_historial_por_lead(libro, estado, historial):
         inicio_bloques[lead_id] = fila
 
         # Fila 1 del bloque: identificación del lead
-        titulo = f"LEAD {lead_id}  |  ETAPA ACTUAL: {str(lead['ETAPA_ACTUAL']).upper()}"
+        actual = etapa_con_embudo(lead["ETAPA_ACTUAL"], lead.get("EMBUDO_ACTUAL"))
+        titulo = f"LEAD {lead_id}  |  ETAPA ACTUAL: {str(actual).upper()}"
         ws.cell(row=fila, column=1, value=titulo).font = Font(name=FUENTE, bold=True, color="FFFFFF", size=12)
         ws.merge_cells(start_row=fila, start_column=1, end_row=fila, end_column=n_cols)
         for col in range(1, n_cols + 1):
@@ -337,7 +391,11 @@ def _escribir_historial_por_lead(libro, estado, historial):
             es_ultimo = mov["ES_ULTIMO_MOVIMIENTO"] == "Sí"
             for col, (campo, _, _, fmt) in enumerate(COLUMNAS_BLOQUE, start=1):
                 valor = mov[campo]
-                if pd.isna(valor):
+                if campo == "ETAPA_NUEVA":          # con su embudo: "CIERRES: Oferta"
+                    valor = etapa_con_embudo(valor, mov.get("EMBUDO"))
+                elif campo == "ETAPA_ANTERIOR":
+                    valor = etapa_con_embudo(valor, mov.get("EMBUDO_ANTERIOR"))
+                if valor is None or pd.isna(valor):
                     valor = None
                 elif campo == "FECHA":
                     valor = valor.to_pydatetime()
@@ -403,6 +461,7 @@ def escribir_excel(hojas, ruta, fecha_corte, asesor=""):
             "El tiempo transcurrido se calcula desde la última actualización de etapa hasta la fecha de corte (momento en que se generó el reporte).",
             "'Dejado a futuro' agrupa las etapas cuyo nombre contiene un año (p. ej. 2025 o 2026).",
             "'Otros' agrupa etapas no contempladas en la clasificación; revisarlas si aparecen.",
+            "'Sin capacidad' incluye también los leads cuyo MOTIVO LEAD PERDIDO es SIN CAPACIDAD.",
             "En 'Historial por lead', los días en la etapa nueva del último cambio se cuentan hasta la fecha de corte.",
         ]
         for i, texto in enumerate(notas, start=1):
@@ -473,6 +532,7 @@ def generar_reporte_estado_leads(historial, asesor="", ruta_salida=None,
     """
     if isinstance(historial, (str, Path)):
         historial = pd.read_excel(historial)
+    historial = normalizar_columnas_historial(historial)
 
     faltantes = [c for c in COLUMNAS_REQUERIDAS if c not in historial.columns]
     if faltantes:
@@ -509,7 +569,7 @@ def main():
     labels = fn.import_json("json/secret.json")
     asesor = labels["asesores"][0]  # primer asesor de la lista
 
-    df = fn.import_xlsx(RUTA_HISTORIAL)
+    df = normalizar_columnas_historial(fn.import_xlsx(RUTA_HISTORIAL))
     historial = filtrar_por_etiqueta(df, asesor)
     generar_reporte_estado_leads(historial, asesor=asesor)
 

@@ -12,8 +12,8 @@ En la ventana se elige:
     cambiar la carpeta o FECHA_HASTA, se usa el historial que haya en
     <carpeta>/<FECHA_HASTA>/, si existe;
   - qué estatus de negocio incluir (lista de secret.json);
-  - si usar todos los leads del historial o solo los creados a partir de
-    FECHA_DESDE;
+  - si usar todos los leads del historial o solo los que tienen su FECHA
+    DICTAMEN entre FECHA_DESDE y FECHA_HASTA (inclusive);
   - un texto opcional al inicio del nombre de los archivos.
 
 Sin carpeta de reportes elegida no se puede descargar ni generar.
@@ -42,10 +42,11 @@ import requests
 import functions as fn
 from general_report import (CARPETA_INDIVIDUALES, NOMBRE_ARCHIVO_GENERAL, PREFIJO_INDIVIDUAL,
                             carpeta_del_dia, generar_reporte_general)
-from individual_reports import MESES, _nombre_archivo, generar_reporte_estado_leads, normalizar
+from individual_reports import (MESES, _nombre_archivo, generar_reporte_estado_leads, normalizar,
+                                normalizar_columnas_historial)
 
 COL_ESTATUS = "ESTATUS DE NEGOCIO"
-COL_CREACION = "creacion_de_lead"
+COL_DICTAMEN = "FECHA DICTAMEN"
 # Ubicación de la lista de estatus dentro de secret.json. Ajusta las claves
 # si la guardaste con otro nombre; p. ej. ["people", "estatus"] para
 # secret.json -> people -> estatus.
@@ -98,28 +99,30 @@ def estatus_no_listados(df, lista):
 
 
 def validar_historial(df):
-    faltan = [c for c in ("LEAD_ID", COL_ESTATUS, COL_CREACION) if c not in df.columns]
+    faltan = [c for c in ("LEAD_ID", COL_ESTATUS, COL_DICTAMEN) if c not in df.columns]
     if faltan:
         raise ValueError(f"Al historial le faltan las columnas {faltan}. "
                          "Descarga el historial de nuevo.")
 
 
-def filtrar_historial(df, estatus, solo_desde_fecha=None):
+def filtrar_historial(df, estatus, rango_dictamen=None):
     """Historial completo de los leads que cumplen los filtros.
 
-    estatus          : estatus de negocio elegidos (sin importar acentos ni
-                       mayúsculas). Un lead entra si alguno de sus estatus
-                       está en la lista.
-    solo_desde_fecha : date; si se indica, solo entran los leads creados ese
-                       día o después. Los leads sin fecha de creación quedan
-                       fuera.
+    estatus        : estatus de negocio elegidos (sin importar acentos ni
+                     mayúsculas). Un lead entra si alguno de sus estatus
+                     está en la lista.
+    rango_dictamen : (desde, hasta) como date; si se indica, solo entran los
+                     leads cuya FECHA DICTAMEN cae entre esas dos fechas,
+                     incluidas. Los leads sin FECHA DICTAMEN quedan fuera.
     """
     elegidos = {normalizar(e) for e in estatus}
     por_lead = _estatus_por_lead(df)
     leads = set(por_lead[por_lead.map(lambda v: bool(_estatus_de_celda(v) & elegidos))].index)
-    if solo_desde_fecha is not None:
-        creacion = pd.to_datetime(df.groupby("LEAD_ID")[COL_CREACION].first(), errors="coerce")
-        leads &= set(creacion[creacion >= pd.Timestamp(solo_desde_fecha)].index)
+    if rango_dictamen is not None:
+        desde, hasta = (pd.Timestamp(f) for f in rango_dictamen)
+        dictamen = pd.to_datetime(df.groupby("LEAD_ID")[COL_DICTAMEN].first(),
+                                  errors="coerce").dt.normalize()   # solo el día
+        leads &= set(dictamen[(dictamen >= desde) & (dictamen <= hasta)].index)
     return df[df["LEAD_ID"].isin(leads)].copy()
 
 
@@ -250,7 +253,9 @@ def cargar_historial(ruta_historial):
     if not ruta.exists():
         return None, None
     try:
-        historial = pd.read_excel(ruta)
+        # Los títulos del HISTORIAL ("LEAD ID", "FECHA EVENTO"...) se traducen a
+        # los nombres que usan los reportes y la consulta de secret.json.
+        historial = normalizar_columnas_historial(pd.read_excel(ruta))
         validar_historial(historial)
         return historial, None
     except Exception as e:  # noqa: BLE001 - archivo dañado o de una versión anterior
@@ -592,14 +597,14 @@ class App(tk.Tk):
         # Qué leads usar
         caja = ttk.LabelFrame(derecha, text="Leads a usar", padding=8)
         caja.pack(fill="x")
-        self.solo_desde = tk.BooleanVar(value=False)
+        self.solo_dictamen = tk.BooleanVar(value=False)
         ttk.Radiobutton(caja, text="Todos los leads de historial_etapas_kommo",
-                        variable=self.solo_desde, value=False,
+                        variable=self.solo_dictamen, value=False,
                         command=self._actualizar_conteo).pack(anchor="w")
-        self.opcion_desde = ttk.Radiobutton(caja, variable=self.solo_desde, value=True,
-                                            command=self._actualizar_conteo)
-        self.opcion_desde.pack(anchor="w")
-        self._actualizar_texto_desde()
+        self.opcion_dictamen = ttk.Radiobutton(caja, variable=self.solo_dictamen, value=True,
+                                               command=self._actualizar_conteo)
+        self.opcion_dictamen.pack(anchor="w")
+        self._actualizar_texto_filtro()
 
         # Descripción del reporte general
         caja = ttk.Frame(derecha)
@@ -694,7 +699,7 @@ class App(tk.Tk):
         self.fecha = self.selector_hasta.get()
         fn.guardar_preferencias({"fecha_desde": self.fecha_desde.isoformat(),
                                  "fecha_hasta": self.fecha.isoformat()})
-        self._actualizar_texto_desde()
+        self._actualizar_texto_filtro()
         self._actualizar_nombres()
         if cambio_hasta:              # otra carpeta de periodo: otro historial
             self._recargar_historial()
@@ -703,9 +708,10 @@ class App(tk.Tk):
         self._actualizar_info_historial()
         self._actualizar_estado()
 
-    def _actualizar_texto_desde(self):
-        self.opcion_desde.config(
-            text=f"Solo leads creados a partir de FECHA_DESDE ({self.fecha_desde:%d/%m/%Y})")
+    def _actualizar_texto_filtro(self):
+        self.opcion_dictamen.config(
+            text=f"Solo leads con FECHA DICTAMEN del {self.fecha_desde:%d/%m/%Y} "
+                 f"al {self.fecha:%d/%m/%Y} (FECHA_DESDE a FECHA_HASTA)")
 
     def _elegir_carpeta(self):
         inicial = self.carpeta_reportes or str(Path.home())
@@ -815,7 +821,8 @@ class App(tk.Tk):
                 with contextlib.redirect_stdout(escritor), contextlib.redirect_stderr(escritor):
                     extractor.descargar_historial(desde.isoformat(), hasta.isoformat(),
                                                   destino, al_avanzar=al_avanzar)
-                self._cola.put(("fin", desde, hasta))
+                anomalias = dict(getattr(extractor, "ULTIMAS_ANOMALIAS", {}) or {})
+                self._cola.put(("fin", desde, hasta, anomalias))
             except BaseException as e:  # noqa: BLE001 - se informa en la ventana
                 self._cola.put(("error", e))
 
@@ -862,7 +869,7 @@ class App(tk.Tk):
     def _terminar_descarga(self, resultado):
         self._descargando = False
         if resultado[0] == "fin":
-            _, desde, hasta = resultado
+            _, desde, hasta, anomalias = resultado
             historial, aviso = cargar_historial(self._ruta_descarga)
             if historial is None:
                 self._fallo_descarga(aviso or "No se pudo leer el historial descargado.")
@@ -876,9 +883,15 @@ class App(tk.Tk):
                 self._actualizar_conteo()
                 self._avisar_estatus_no_listados()
                 self._actualizar_estado()
-                messagebox.showinfo("Historial descargado",
-                                    f"Se descargaron {historial['LEAD_ID'].nunique()} leads "
-                                    f"({len(historial)} movimientos).")
+                texto = (f"Se descargaron {historial['LEAD_ID'].nunique()} leads "
+                         f"({len(historial)} movimientos).")
+                con_anomalias = {lid for ids in anomalias.values() for lid in ids}
+                if con_anomalias:
+                    texto += (f"\n\n{len(con_anomalias)} leads requieren revisión (varias etiquetas "
+                              "CIERRES, o sin FECHA DICTAMEN o ESTATUS DE NEGOCIO). Sus números "
+                              "están en el cuadro de mensajes y en leads_anomalos.txt, "
+                              "en la carpeta del periodo.")
+                messagebox.showinfo("Historial descargado", texto)
                 return
         else:
             self._fallo_descarga(explicar_error_descarga(resultado[1]))
@@ -914,7 +927,8 @@ class App(tk.Tk):
         return [self.lista.get(i) for i in self.lista.curselection()]
 
     def _fecha_filtro(self):
-        return self.fecha_desde if self.solo_desde.get() else None
+        """(FECHA_DESDE, FECHA_HASTA) si se eligió filtrar por FECHA DICTAMEN; si no, None."""
+        return (self.fecha_desde, self.fecha) if self.solo_dictamen.get() else None
 
     def _actualizar_conteo(self):
         if self.historial is None:
