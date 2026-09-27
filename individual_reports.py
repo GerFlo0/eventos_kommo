@@ -15,6 +15,7 @@ El reporte incluye tres hojas: Historial por lead, Resumen y Estado actual.
 """
 
 import unicodedata
+import json
 import re
 from datetime import datetime
 from pathlib import Path
@@ -27,7 +28,6 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.hyperlink import Hyperlink
 
-RUTA_HISTORIAL = "tablas/historial_etapas_kommo.xlsx"
 CARPETA_REPORTES = "tablas/reportes/individuales"
 MESES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio",
          "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
@@ -37,24 +37,20 @@ COLUMNAS_REQUERIDAS = ["LEAD_ID", "ETAPA_ANTERIOR", "ETAPA_NUEVA", "FECHA"]
 # Columnas opcionales: si no vienen, se crean vacías.
 COLUMNAS_OPCIONALES = ["DIAS_EN_ETAPA_ANTERIOR", "ETIQUETAS"]
 
-# Categorías de estado actual, en el orden en que aparecen en el reporte.
-# Cada categoría se detecta comparando ETAPA_NUEVA sin mayúsculas ni acentos
-# contra la lista de nombres equivalentes.
+# Categorías según la etapa actual (las mismas del reporte general), en el
+# orden en que aparecen. Se comparan sin mayúsculas ni acentos con la lista
+# de nombres de etapa equivalentes (de VENTAS y de CIERRES).
 CATEGORIAS = [
-    ("Logrado con éxito", ["logrado con exito", "otorgado"]),
-    ("Oferta", ["oferta"]),
-    ("Oferta en espera", ["oferta en espera"]),
-    ("Documentación", ["documentacion"]),
-    ("Capturado", ["capturado"]),
-    ("Venta perdida", ["venta perdida", "ventas perdidas", "ventas perdidos",
-                       "lead perdido", "leads perdidos"]),
-    ("Sin capacidad", ["sin capacidad"]),
+    ("GANADOS", ["otorgado", "leads ganados"]),
+    ("OFERTA", ["oferta"]),
+    ("OFERTA EN ESPERA", ["oferta en espera"]),
+    ("DOCUMENTACION", ["documentacion"]),
+    ("CAPTURADO", ["capturado"]),
+    ("LEAD PERDIDO", ["lead perdido", "no interesado"]),
+    ("SIN CAPACIDAD", ["sin capacidad", "sin capacidad (cartera)"]),
 ]
-CATEGORIA_FUTURO = "Dejado a futuro"   # etapas cuyo nombre contiene un año (2025, 2026...)
-# Un año de 4 dígitos que empieza con 20 y no forma parte de un número más
-# largo. Antes bastaba con contener "20", y etapas como "OFERTA 20%" o
-# "Llamar en 20 días" se clasificaban por error como "Dejado a futuro".
-PATRON_FUTURO = re.compile(r"(?<!\d)20\d{2}(?!\d)")
+CATEGORIA_GANADOS = "GANADOS"
+CATEGORIA_FUTURO = "BIMESTRE"          # leads dejados a futuro: la etapa contiene "20"
 CATEGORIA_OTROS = "Otros"              # cualquier etapa no contemplada arriba
 ORDEN_CATEGORIAS = [c for c, _ in CATEGORIAS] + [CATEGORIA_FUTURO, CATEGORIA_OTROS]
 
@@ -83,27 +79,43 @@ def normalizar(texto):
 def clasificar_etapa(etapa):
     """Devuelve la categoría de estado actual para una etapa de Kommo."""
     etapa_norm = normalizar(etapa)
-    if PATRON_FUTURO.search(etapa_norm):
+    if etapa_norm in _MAPA_ETAPAS:
+        return _MAPA_ETAPAS[etapa_norm]
+    if es_dejado_a_futuro(etapa):
         return CATEGORIA_FUTURO
-    return _MAPA_ETAPAS.get(etapa_norm, CATEGORIA_OTROS)
+    return CATEGORIA_OTROS
+
+
+def es_dejado_a_futuro(etapa):
+    """DEJADO A FUTURO: la etapa contiene el texto "20" (p. ej. "ENERO 2027")."""
+    return etapa is not None and not pd.isna(etapa) and "20" in str(etapa)
+
+
+def es_ganado(etapa):
+    """GANADO: la etapa es OTORGADO (de VENTAS o de CIERRES) o "Leads ganados"."""
+    return clasificar_etapa(etapa) == CATEGORIA_GANADOS
 
 
 COL_MOTIVO = "MOTIVO LEAD PERDIDO"
-CATEGORIA_SIN_CAPACIDAD = "Sin capacidad"
+COL_MONTO = "MONTO OTORGADO"
+FORMATO_DINERO = '"$"#,##0.00'
 
 
 def categoria_lead(etapa, motivo=None):
-    """Categoría de un lead: 'Sin capacidad' si está en la etapa SIN CAPACIDAD
-    (por su etapa) o si su MOTIVO LEAD PERDIDO dice SIN CAPACIDAD; si no, la
-    que corresponde a su etapa."""
-    if "sin capacidad" in normalizar(motivo):
-        return CATEGORIA_SIN_CAPACIDAD
+    """Categoría de un lead según su etapa actual. El MOTIVO LEAD PERDIDO es
+    solo informativo: SIN CAPACIDAD se determina únicamente por la etapa."""
     return clasificar_etapa(etapa)
 
 
 # Títulos de la hoja HISTORIAL (extract_data_from_kommo.py) -> nombres que
 # usan los reportes y la consulta de secret.json. Los demás no cambian.
 COLUMNAS_HISTORIAL_INTERNAS = {
+    # V11
+    "LEAD": "LEAD_ID",
+    "CREACION": "creacion_de_lead",
+    "ETAPA NUEVA": "ETAPA_NUEVA",
+    "DIAS ETAPA ANTERIOR": "DIAS_EN_ETAPA_ANTERIOR",
+    # V10
     "LEAD ID": "LEAD_ID",
     "FECHA CREACION DE LEAD": "creacion_de_lead",
     "ETAPA ANTERIOR": "ETAPA_ANTERIOR",
@@ -227,6 +239,8 @@ def generar_reporte(df, fecha_corte):
                                      "EMBUDO_ANTERIOR"]].apply(construir_ruta)
     ultimos["ETIQUETAS"] = ultimos["LEAD_ID"].map(etiquetas)
     ultimos["RUTA"] = ultimos["LEAD_ID"].map(rutas)
+    ultimos["GANADO"] = ultimos["ETAPA_NUEVA"].map(es_ganado).astype(bool)
+    ultimos["DEJADO A FUTURO"] = ultimos["ETAPA_NUEVA"].map(es_dejado_a_futuro).astype(bool)
 
     ultimos["_orden"] = ultimos["ESTADO_ACTUAL"].map(ORDEN_CATEGORIAS.index)
     ultimos = ultimos.sort_values(["_orden", "DIAS_DESDE_ULTIMO_MOVIMIENTO"], ascending=[True, False])
@@ -235,7 +249,7 @@ def generar_reporte(df, fecha_corte):
         "LEAD_ID", "creacion_de_lead","ESTADO_ACTUAL", "ETAPA_NUEVA", "FECHA",
         "DIAS_DESDE_ULTIMO_MOVIMIENTO", "TIEMPO_TRANSCURRIDO", "ETAPA_ANTERIOR",
         "ESTATUS DE NEGOCIO", "FECHA DICTAMEN", COL_MOTIVO, "TOTAL_MOVIMIENTOS", "RUTA",
-        "ETIQUETAS", "EMBUDO",
+        "ETIQUETAS", "EMBUDO", "GANADO", "DEJADO A FUTURO", COL_MONTO,
     ]
     estado = (
         ultimos[[c for c in columnas_estado if c in ultimos.columns]]
@@ -316,12 +330,25 @@ def _dar_formato(ws, fila_encabezado, formatos=None):
 _RELLENO_LEAD = PatternFill("solid", start_color="D9E1F2")
 _RELLENO_SUBENCABEZADO = PatternFill("solid", start_color="8EA9DB")
 HOJA_POR_LEAD = "Historial por lead"
-# Columnas que se muestran en la hoja "Estado actual" (el DataFrame interno
-# conserva más datos porque los usan el Resumen y el Historial por lead).
+# Columnas de la hoja "Estado actual": (nombre interno, título en el Excel),
+# en orden. El DataFrame interno conserva más datos porque los usan el
+# Resumen y el Historial por lead. general_report.py lee estos títulos.
 COLUMNAS_HOJA_ESTADO = [
-    "LEAD_ID", "creacion_de_lead", "EMBUDO_ACTUAL", "ETAPA_ACTUAL", "ESTATUS DE NEGOCIO",
-    "FECHA DICTAMEN", COL_MOTIVO, "FECHA_ULTIMO_MOVIMIENTO",
-    "TIEMPO_TRANSCURRIDO", "TOTAL_MOVIMIENTOS", "RUTA",
+    ("LEAD_ID", "LEAD"),
+    ("creacion_de_lead", "CREACION"),
+    ("EMBUDO_ACTUAL", "EMBUDO"),
+    ("ETAPA_ACTUAL", "ETAPA ACTUAL"),
+    ("ETIQUETAS", "ETIQUETAS"),
+    ("ESTATUS DE NEGOCIO", "ESTATUS DE NEGOCIO"),
+    ("FECHA DICTAMEN", "FECHA DICTAMEN"),
+    ("GANADO", "GANADO"),
+    ("DEJADO A FUTURO", "DEJADO A FUTURO"),
+    (COL_MONTO, COL_MONTO),
+    (COL_MOTIVO, COL_MOTIVO),
+    ("FECHA_ULTIMO_MOVIMIENTO", "FECHA ULTIMO MOVIMIENTO"),
+    ("TIEMPO_TRANSCURRIDO", "TIEMPO TRANSCURRIDO"),
+    ("TOTAL_MOVIMIENTOS", "TOTAL MOVIMIENTOS"),
+    ("RUTA", "RUTA LEAD"),
 ]
 COLUMNAS_BLOQUE = [
     ("PASO", "PASO", 8, None),
@@ -431,11 +458,13 @@ def escribir_excel(hojas, ruta, fecha_corte, asesor=""):
     with pd.ExcelWriter(ruta, engine="openpyxl", datetime_format=FORMATO_FECHA) as writer:
         fila_tabla_resumen = 5
         hojas["Resumen"].to_excel(writer, sheet_name="Resumen", index=False, startrow=fila_tabla_resumen - 1)
-        estado = hojas["Estado actual"]
-        # creacion_de_lead solo existe si el historial se generó con la versión
-        # actual del extractor; si falta, la hoja sale sin esa columna.
-        estado[[c for c in COLUMNAS_HOJA_ESTADO if c in estado.columns]].to_excel(
-            writer, sheet_name="Estado actual", index=False)
+        estado = hojas["Estado actual"].copy()
+        for interno, _ in COLUMNAS_HOJA_ESTADO:     # columnas que no vengan: vacías
+            if interno not in estado.columns:
+                estado[interno] = None
+        (estado[[interno for interno, _ in COLUMNAS_HOJA_ESTADO]]
+         .rename(columns=dict(COLUMNAS_HOJA_ESTADO))
+         .to_excel(writer, sheet_name="Estado actual", index=False))
 
         libro = writer.book
 
@@ -459,9 +488,9 @@ def escribir_excel(hojas, ruta, fecha_corte, asesor=""):
         ws.cell(row=nota, column=1, value="Notas:").font = Font(name=FUENTE, bold=True)
         notas = [
             "El tiempo transcurrido se calcula desde la última actualización de etapa hasta la fecha de corte (momento en que se generó el reporte).",
-            "'Dejado a futuro' agrupa las etapas cuyo nombre contiene un año (p. ej. 2025 o 2026).",
+            "Las categorías dependen de la etapa actual del lead, igual que en el reporte general.",
+            "'BIMESTRE' agrupa los leads dejados a futuro (la etapa contiene \"20\", p. ej. \"ENERO 2027\").",
             "'Otros' agrupa etapas no contempladas en la clasificación; revisarlas si aparecen.",
-            "'Sin capacidad' incluye también los leads cuyo MOTIVO LEAD PERDIDO es SIN CAPACIDAD.",
             "En 'Historial por lead', los días en la etapa nueva del último cambio se cuentan hasta la fecha de corte.",
         ]
         for i, texto in enumerate(notas, start=1):
@@ -471,8 +500,9 @@ def escribir_excel(hojas, ruta, fecha_corte, asesor=""):
         # --- Estado actual, con vínculo de cada LEAD_ID a su bloque de historial
         ws = libro["Estado actual"]
         _dar_formato(ws, 1, {
-            "creacion_de_lead": FORMATO_FECHA,
-            "FECHA_ULTIMO_MOVIMIENTO": FORMATO_FECHA,
+            "CREACION": FORMATO_FECHA,
+            "FECHA ULTIMO MOVIMIENTO": FORMATO_FECHA,
+            COL_MONTO: FORMATO_DINERO,
         })
         _formato_fecha_sin_hora(ws, "FECHA DICTAMEN")
         for (celda,) in ws.iter_rows(min_row=2, max_col=1):
@@ -486,6 +516,30 @@ def escribir_excel(hojas, ruta, fecha_corte, asesor=""):
 # ---------------------------------------------------------------------------
 # Función pública
 # ---------------------------------------------------------------------------
+ARCHIVO_ANOMALIAS_JSON = "leads_anomalos.json"
+
+
+def cargar_asignaciones(carpeta):
+    """{LEAD_ID: asesor asignado} de leads_anomalos.json (en la carpeta del
+    historial). Solo los leads con un asesor asignado; los empates no aparecen
+    (cuentan para todos sus asesores). Sin archivo: {}."""
+    ruta = Path(carpeta) / ARCHIVO_ANOMALIAS_JSON
+    try:
+        datos = json.loads(ruta.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return {int(d["lead"]): d["asignado"] for d in datos.get("varias_asesores") or []
+            if d.get("asignado")}
+
+
+def aplicar_asignacion(historial, asesor, asignaciones):
+    """Quita del historial de un asesor los leads asignados a OTRO asesor."""
+    if not asignaciones or historial is None or historial.empty:
+        return historial
+    ajenos = {lid for lid, a in asignaciones.items() if normalizar(a) != normalizar(asesor)}
+    return historial[~historial["LEAD_ID"].isin(ajenos)]
+
+
 def _carpeta_por_fecha(carpeta_base, fecha):
     """tablas + 23/09/2026 -> tablas/septiembre/23"""
     return Path(carpeta_base) / MESES[fecha.month - 1] / f"{fecha.day:02d}"
@@ -569,8 +623,10 @@ def main():
     labels = fn.import_json("json/secret.json")
     asesor = labels["asesores"][0]  # primer asesor de la lista
 
-    df = normalizar_columnas_historial(fn.import_xlsx(RUTA_HISTORIAL))
-    historial = filtrar_por_etiqueta(df, asesor)
+    ruta = fn.ruta_historial()                      # configuration.json -> CARPETA_HISTORIAL
+    df = normalizar_columnas_historial(fn.import_xlsx(ruta))
+    historial = aplicar_asignacion(filtrar_por_etiqueta(df, asesor), asesor,
+                                   cargar_asignaciones(ruta.parent))
     generar_reporte_estado_leads(historial, asesor=asesor)
 
 

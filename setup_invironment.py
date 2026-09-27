@@ -49,49 +49,38 @@ REQUIRED_FILES_CONTENT = {
         "TOKEN": "tu_token_de_kommo",
         "SUBDOMAIN": "tu_subdominio_de_kommo",
         "PIPELINE_ID": {
-            "VENTAS": 0,
-            "CIERRES": 0
+            "VENTAS": id_del_pipeline_de_ventas,
+            "CIERRES": id_del_pipeline_de_cierres
         }
     },
     "asesores": [
-            "MIRIAM GOMEZ CIERRES",
-            "KARINA MATA CIERRES",
             "ANA VILLEGAS CIERRES",
-            "EDNA RODRIGUEZ CIERRES",
-            "CARRANZA SARDINA CIERRES",
-            "MARISOL HERNANDEZ CIERRES",
-            "CAROLINA RAMIREZ CIERRES",
-            "HANIA GARCIA CIERRES",
-            "PAOLA RODRIGUEZ CIERRES",
-            "GLORIA ORTIZ CIERRES",
-            "IRASEMA GUTIERREZ CIERRES",
             "ANDRE TREVIÑO CIERRES",
-            "HECTOR RODRIGUEZ CIERRES",
-            "ITZELH GONZALEZ CIERRES",
-            "DANIELA IRACHETA CIERRES",
+            "BEATRIZ DE LA CRUZ CIERRES",
+            "CAROLINA RAMIREZ CIERRES",
             "DANIELLY RODRIGUEZ CIERRES",
             "DULCE FRANCO CIERRES",
+            "EDNA RODRIGUEZ CIERRES",
             "FERNANDA CASTILLO CIERRES",
             "GABRIELA SANCHEZ CIERRES",
+            "GLORIA ORTIZ CIERRES",
+            "GUADALUPE BECERRA CIERRES",
+            "HANIA GARCIA CIERRES",
+            "HECTOR RODRIGUEZ CIERRES",
+            "IRASEMA GUTIERREZ CIERRES",
+            "ITZELH GONZALEZ CIERRES",
+            "JAEL RUIZ CIERRES",
+            "KARINA MATA CIERRES",
+            "KATE MALPICA CIERRES",
             "LIDIA GARZA CIERRES",
+            "LUZ BANDA CIERRES",
             "MAGALI HERNANDEZ CIERRES",
-            "MAYTE NAVARRO CIERRES"
-        ]
-    ,
-    "stages": {
-        "ventas":{
-            "Sin capacidad": "89344779"
-        },
-        "cierres":{
-            "Ganados": "",
-            "Oferta": "",
-            "Oferta en Espera": "",
-            "Documentación": "",
-            "Capturado": "",
-            "Lead Perdido": ""
-        }
-        
-    },
+            "MARISOL HERNANDEZ CIERRES",
+            "MAYTE NAVARRO CIERRES",
+            "MIRIAM GOMEZ CIERRES",
+            "PAOLA RODRIGUEZ CIERRES",
+            "YESSENIA ESPINO CIERRES"
+        ],    
     "query": "SELECT * FROM df WHERE LEAD_ID IN (SELECT LEAD_ID FROM df WHERE ETIQUETAS LIKE $1)",
     "estatus_negocio": [
         "COMPRA DE DEUDA MENOR A 40K",
@@ -99,8 +88,11 @@ REQUIRED_FILES_CONTENT = {
         "CREDITO NUEVO MENOR A 40K",
         "FINANCIERA RESTRINGIDA (CONSUBANCO)",
         "CREDITO NUEVO MAYOR  A 40K"
-        ]
+    ],
+    "campos_tarjeta": ["ESTATUS DE NEGOCIO", "FECHA DICTAMEN", "MONTO OTORGADO", "MOTIVO LEAD PERDIDO"],
+    "campos_dinero": ["MONTO OTORGADO"]
 }
+
 """
 }
 # Versión mínima de Python requerida

@@ -43,6 +43,25 @@ def carpeta_datos() -> Path:
     return carpeta
 
 
+NOMBRE_HISTORIAL = "historial_etapas_kommo.xlsx"
+
+
+def carpeta_historial() -> Path:
+    """Carpeta del historial: settings.CARPETA_HISTORIAL de configuration.json.
+
+    Una ruta absoluta se usa tal cual. Una relativa (o si no está definida:
+    "tablas") se toma dentro de la carpeta de datos del programa.
+    """
+    settings = import_json(RUTA_CONFIGURACION)["settings"]
+    carpeta = Path(str(settings.get("CARPETA_HISTORIAL") or "tablas")).expanduser()
+    return carpeta if carpeta.is_absolute() else carpeta_datos() / carpeta
+
+
+def ruta_historial() -> Path:
+    """Ubicación del historial de etapas (se reemplaza en cada descarga)."""
+    return carpeta_historial() / NOMBRE_HISTORIAL
+
+
 def _escribir_json_seguro(ruta, datos):
     """Escribe un JSON sin dejarlo a medias si algo falla (archivo temporal + reemplazo)."""
     ruta = Path(ruta)

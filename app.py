@@ -6,17 +6,18 @@ En la ventana se elige:
   - el periodo (FECHA_DESDE y FECHA_HASTA) con un calendario;
   - la carpeta donde se guardan los reportes: todos quedan en
     <carpeta>/<FECHA_HASTA como AAAA-MM-DD>/;
-  - descargar el historial de Kommo (con barra de avance). Se guarda en esa
-    misma carpeta del periodo, junto con su .info.json; si ya había uno ahí,
-    se reemplaza (los de otros periodos no se tocan). Al abrir el programa o
-    cambiar la carpeta o FECHA_HASTA, se usa el historial que haya en
-    <carpeta>/<FECHA_HASTA>/, si existe;
+  - descargar el historial de Kommo (con barra de avance): el historial
+    completo de los leads de los asesores, sin límite de fechas. Se guarda en
+    configuration.json -> CARPETA_HISTORIAL (se reemplaza en cada descarga),
+    junto con su .info.json y el reporte de leads anómalos (.txt y .json).
+    La ventana muestra la fecha de creación del historial cargado;
   - qué estatus de negocio incluir (lista de secret.json);
   - si usar todos los leads del historial o solo los que tienen su FECHA
     DICTAMEN entre FECHA_DESDE y FECHA_HASTA (inclusive);
   - un texto opcional al inicio del nombre de los archivos.
 
-Sin carpeta de reportes elegida no se puede descargar ni generar.
+Para generar reportes hace falta el historial en CARPETA_HISTORIAL y una
+carpeta de reportes elegida.
 Las fechas y la carpeta se recuerdan entre usos (preferencias.json en la
 carpeta de datos del programa; ver functions.carpeta_datos()).
 """
@@ -42,7 +43,8 @@ import requests
 import functions as fn
 from general_report import (CARPETA_INDIVIDUALES, NOMBRE_ARCHIVO_GENERAL, PREFIJO_INDIVIDUAL,
                             carpeta_del_dia, generar_reporte_general)
-from individual_reports import (MESES, _nombre_archivo, generar_reporte_estado_leads, normalizar,
+from individual_reports import (MESES, _nombre_archivo, aplicar_asignacion, cargar_asignaciones,
+                                generar_reporte_estado_leads, normalizar,
                                 normalizar_columnas_historial)
 
 COL_ESTATUS = "ESTATUS DE NEGOCIO"
@@ -144,19 +146,14 @@ def nombre_carpeta_reportes(fecha):
     return f"{fecha:%Y-%m-%d}"
 
 
-# Nombre del historial dentro de la carpeta del periodo.
-NOMBRE_HISTORIAL = "historial_etapas_kommo.xlsx"
-
-
-def ruta_historial(carpeta_reportes, fecha_hasta):
-    """Ubicación real del historial de un periodo:
-    <carpeta_reportes>/<FECHA_HASTA como AAAA-MM-DD>/historial_etapas_kommo.xlsx.
+def ruta_historial():
+    """Ubicación del historial: configuration.json -> CARPETA_HISTORIAL.
     Todo lo que lee, escribe o describe el historial usa esta función."""
-    return Path(carpeta_reportes) / nombre_carpeta_reportes(fecha_hasta) / NOMBRE_HISTORIAL
+    return fn.ruta_historial()
 
 
 def generar_reportes(df, secret, fecha, descripcion="", prefijo_individual="", prefijo_general="",
-                     carpeta_reportes=None):
+                     carpeta_reportes=None, asignaciones=None):
     """Reportes individuales de cada asesor + reporte general.
 
     fecha            : FECHA_HASTA; nombra la carpeta y los archivos.
@@ -166,7 +163,11 @@ def generar_reportes(df, secret, fecha, descripcion="", prefijo_individual="", p
                        las carpetas de siempre dentro del proyecto
                        (tablas/reportes/individuales|generales/<mes>/<día>).
     Los prefijos se agregan al inicio del nombre de los reportes individuales
-    y del general (vacío = nombre normal). Devuelve la ruta del reporte general.
+    y del general (vacío = nombre normal).
+    asignaciones     : {LEAD_ID: asesor} de los leads con varios asesores (de
+                       leads_anomalos.json); cada uno sale solo en el reporte
+                       de su asesor. Si no se indica, se lee junto al historial.
+    Devuelve la ruta del reporte general.
     """
     prefijo_individual = validar_prefijo(prefijo_individual)
     prefijo_general = validar_prefijo(prefijo_general)
@@ -185,6 +186,8 @@ def generar_reportes(df, secret, fecha, descripcion="", prefijo_individual="", p
         for viejo in carpeta_dia.glob(f"{glob.escape(prefijo_individual)}{PREFIJO_INDIVIDUAL}*.xlsx"):
             viejo.unlink()   # PermissionError si está abierto en Excel
 
+    if asignaciones is None:
+        asignaciones = cargar_asignaciones(ruta_historial().parent)
     fecha_corte = datetime.now().replace(microsecond=0)  # misma para todos los reportes
     generados = []
     con = db.connect()
@@ -192,6 +195,7 @@ def generar_reportes(df, secret, fecha, descripcion="", prefijo_individual="", p
     try:
         for asesor in secret["asesores"]:
             resultado = con.execute(secret["query"], [f"%{asesor}%"]).df()
+            resultado = aplicar_asignacion(resultado, asesor, asignaciones)
             ruta = generar_reporte_estado_leads(
                 resultado, asesor=asesor, fecha_corte=fecha_corte,
                 ruta_salida=carpeta_dia / _nombre_archivo(asesor, prefijo_individual))
@@ -216,12 +220,10 @@ def ruta_info_historial(ruta_historial):
     return ruta.with_name(f"{ruta.stem}.info.json")
 
 
-def guardar_info_historial(ruta_historial, fecha_desde, fecha_hasta, historial):
-    """Anota cuándo y con qué periodo se descargó el historial."""
+def guardar_info_historial(ruta_historial, historial):
+    """Anota cuándo se descargó (creó) el historial."""
     info = {
         "descargado": datetime.now().isoformat(timespec="seconds"),
-        "fecha_desde": fecha_desde.isoformat(),
-        "fecha_hasta": fecha_hasta.isoformat(),
         "leads": int(historial["LEAD_ID"].nunique()),
         "movimientos": int(len(historial)),
         # Si el historial se reemplaza por otro medio (p. ej. corriendo el
@@ -239,8 +241,6 @@ def leer_info_historial(ruta_historial):
         info = json.loads(ruta_info_historial(ruta).read_text(encoding="utf-8"))
         if abs(float(info["marca_archivo"]) - os.path.getmtime(ruta)) > 1:
             return None
-        info["fecha_desde"] = date.fromisoformat(info["fecha_desde"])
-        info["fecha_hasta"] = date.fromisoformat(info["fecha_hasta"])
         info["descargado"] = datetime.fromisoformat(info["descargado"])
         return info
     except (OSError, ValueError, KeyError, TypeError):
@@ -281,9 +281,7 @@ def cargar_datos():
                    or hoy.replace(day=1))
     fecha_hasta = _fecha_de_texto(prefs.get("fecha_hasta")) or fn.fecha_reportes()
     carpeta = prefs.get("carpeta_reportes") or None
-    historial, aviso = None, None
-    if carpeta:   # el historial del periodo guardado, si ya se descargó
-        historial, aviso = cargar_historial(ruta_historial(carpeta, fecha_hasta))
+    historial, aviso = cargar_historial(ruta_historial())   # el de CARPETA_HISTORIAL
     return {
         "secret": secret,
         "estatus": estatus,
@@ -649,8 +647,11 @@ class App(tk.Tk):
         """Habilita o deshabilita los controles según lo que falte."""
         sin_carpeta = not self.carpeta_reportes
         fechas_mal = self.selector_desde.get() > self.selector_hasta.get()
-        puede_descargar = not (self._descargando or sin_carpeta or fechas_mal)
-        puede_generar = puede_descargar and self.historial is not None
+        # La descarga no depende del periodo ni de la carpeta de reportes: el
+        # historial va a CARPETA_HISTORIAL (configuration.json).
+        puede_descargar = not self._descargando
+        puede_generar = (puede_descargar and not sin_carpeta and not fechas_mal
+                         and self.historial is not None)
         self.boton_descargar.state(["!disabled"] if puede_descargar else ["disabled"])
         self.boton.state(["!disabled"] if puede_generar else ["disabled"])
         self.boton_carpeta.state(["disabled"] if self._descargando else ["!disabled"])
@@ -660,52 +661,34 @@ class App(tk.Tk):
 
         self.aviso_fechas.config(
             text="FECHA_DESDE no puede ser posterior a FECHA_HASTA." if fechas_mal else "")
-        if sin_carpeta:
-            requisito = "Elige la carpeta de reportes para poder descargar el historial y generar reportes."
+        if self.historial is None and not self._descargando:
+            requisito = "Descarga el historial para poder generar reportes."
+        elif sin_carpeta:
+            requisito = "Elige la carpeta de reportes para poder generar reportes."
         elif fechas_mal:
             requisito = "Corrige el periodo para continuar."
-        elif self.historial is None and not self._descargando:
-            requisito = "Descarga el historial para poder generar reportes."
         else:
             requisito = ""
         self.requisito.config(text=requisito)
         if self.carpeta_reportes:
             destino = Path(self.carpeta_reportes) / nombre_carpeta_reportes(self.selector_hasta.get())
-            self.destino.config(text=f"Los reportes y el historial se guardarán en: {destino}")
+            self.destino.config(text=f"Los reportes se guardarán en: {destino}")
         else:
             self.destino.config(text="")
 
     @property
     def ruta_historial(self):
-        """Ubicación real del historial del periodo elegido (None sin carpeta)."""
-        if not self.carpeta_reportes:
-            return None
-        return ruta_historial(self.carpeta_reportes, self.fecha)
-
-    def _recargar_historial(self):
-        """Usa el historial que haya en <carpeta>/<FECHA_HASTA>/ (o ninguno)."""
-        ruta = self.ruta_historial
-        self.historial, aviso = cargar_historial(ruta) if ruta else (None, None)
-        if aviso:
-            self._escribir(f"Aviso: {aviso}\n")
-        self._actualizar_info_historial()
-        self._actualizar_conteo()
-        self._avisar_estatus_no_listados()
-        self._actualizar_estado()
+        """Ubicación del historial (configuration.json -> CARPETA_HISTORIAL)."""
+        return ruta_historial()
 
     def _al_cambiar_fechas(self):
-        cambio_hasta = self.selector_hasta.get() != self.fecha
         self.fecha_desde = self.selector_desde.get()
         self.fecha = self.selector_hasta.get()
         fn.guardar_preferencias({"fecha_desde": self.fecha_desde.isoformat(),
                                  "fecha_hasta": self.fecha.isoformat()})
         self._actualizar_texto_filtro()
         self._actualizar_nombres()
-        if cambio_hasta:              # otra carpeta de periodo: otro historial
-            self._recargar_historial()
-            return
         self._actualizar_conteo()
-        self._actualizar_info_historial()
         self._actualizar_estado()
 
     def _actualizar_texto_filtro(self):
@@ -726,7 +709,7 @@ class App(tk.Tk):
         self.carpeta_reportes = str(Path(elegida))
         self.texto_carpeta.set(self.carpeta_reportes)
         fn.guardar_preferencias({"carpeta_reportes": self.carpeta_reportes})
-        self._recargar_historial()
+        self._actualizar_estado()
 
     def _abrir_carpeta(self):
         if not self.carpeta_reportes:
@@ -738,31 +721,21 @@ class App(tk.Tk):
             messagebox.showerror("No se pudo abrir la carpeta", str(e))
 
     def _actualizar_info_historial(self):
+        """Muestra la fecha de creación del historial cargado y dónde está."""
         ruta = self.ruta_historial
-        if ruta is None:
-            self.info_historial.config(text="Elige la carpeta de reportes; el historial se "
-                                            "descarga en la carpeta de cada periodo.")
-            self.aviso_historial.config(text="")
-            return
+        self.aviso_historial.config(text="")
         if self.historial is None:
-            self.info_historial.config(text=f"No hay historial para este periodo. Se descargará en:\n{ruta}")
-            self.aviso_historial.config(text="")
+            self.info_historial.config(text=f"Aún no hay historial. Se descargará en:\n{ruta}")
             return
-        leads = self.historial["LEAD_ID"].nunique()
         info = leer_info_historial(ruta)
-        if info is None:
-            self.info_historial.config(text=f"Historial: {leads} leads, {len(self.historial)} "
-                                            f"movimientos (periodo desconocido).\n{ruta}")
-            self.aviso_historial.config(text="")
-            return
+        try:
+            creado = info["descargado"] if info else datetime.fromtimestamp(os.path.getmtime(ruta))
+        except OSError:
+            creado = None
+        fecha = f"{creado:%d/%m/%Y %H:%M}" if creado else "desconocida"
         self.info_historial.config(
-            text=f"Descargado el {info['descargado']:%d/%m/%Y %H:%M}: periodo "
-                 f"{info['fecha_desde']:%d/%m/%Y} – {info['fecha_hasta']:%d/%m/%Y}, "
-                 f"{leads} leads, {len(self.historial)} movimientos.\n{ruta}")
-        distinto = (info["fecha_desde"], info["fecha_hasta"]) != (self.fecha_desde, self.fecha)
-        self.aviso_historial.config(
-            text="El periodo elegido no coincide con el del historial descargado; "
-                 "descárgalo de nuevo si quieres usar el periodo nuevo." if distinto else "")
+            text=f"Historial creado el {fecha}: {self.historial['LEAD_ID'].nunique()} leads, "
+                 f"{len(self.historial)} movimientos.\n{ruta}")
 
     def _avisar_estatus_no_listados(self):
         if self.historial is None:
@@ -786,12 +759,6 @@ class App(tk.Tk):
         return True
 
     def _descargar(self):
-        if not self._carpeta_disponible():
-            return
-        desde, hasta = self.selector_desde.get(), self.selector_hasta.get()
-        if desde > hasta:
-            messagebox.showwarning("Periodo inválido", "FECHA_DESDE no puede ser posterior a FECHA_HASTA.")
-            return
         try:
             import extract_data_from_kommo as extractor
         except BaseException as e:  # noqa: BLE001 - p. ej. falta algo en secret.json
@@ -801,14 +768,14 @@ class App(tk.Tk):
         self._descargando = True
         self._actualizar_estado()
         self.mensajes.delete("1.0", "end")
-        self._escribir(f"Descargando historial del {desde:%d/%m/%Y} al {hasta:%d/%m/%Y}...\n")
+        self._escribir("Descargando el historial completo de los leads de los asesores...\n")
         self._objetivo = 0.0
         self._mostrado = 0.0
         self._resultado = None
         self._pintar_barra()
         self.etapa_descarga.config(text="Preparando...")
         self._cola = queue.Queue()
-        # Destino fijo para toda la descarga: la carpeta del periodo elegido.
+        # Destino: configuration.json -> CARPETA_HISTORIAL
         destino = self._ruta_descarga = self.ruta_historial
         self._escribir(f"Se guardará en: {destino}\n")
 
@@ -819,10 +786,9 @@ class App(tk.Tk):
             escritor = _EscritorCola(self._cola, destino)
             try:
                 with contextlib.redirect_stdout(escritor), contextlib.redirect_stderr(escritor):
-                    extractor.descargar_historial(desde.isoformat(), hasta.isoformat(),
-                                                  destino, al_avanzar=al_avanzar)
+                    extractor.descargar_historial(destino, al_avanzar=al_avanzar)
                 anomalias = dict(getattr(extractor, "ULTIMAS_ANOMALIAS", {}) or {})
-                self._cola.put(("fin", desde, hasta, anomalias))
+                self._cola.put(("fin", anomalias))
             except BaseException as e:  # noqa: BLE001 - se informa en la ventana
                 self._cola.put(("error", e))
 
@@ -869,13 +835,13 @@ class App(tk.Tk):
     def _terminar_descarga(self, resultado):
         self._descargando = False
         if resultado[0] == "fin":
-            _, desde, hasta, anomalias = resultado
+            _, anomalias = resultado
             historial, aviso = cargar_historial(self._ruta_descarga)
             if historial is None:
                 self._fallo_descarga(aviso or "No se pudo leer el historial descargado.")
             else:
                 self.historial = historial
-                guardar_info_historial(self._ruta_descarga, desde, hasta, historial)
+                guardar_info_historial(self._ruta_descarga, historial)
                 self._mostrado = 1.0
                 self._pintar_barra()
                 self.etapa_descarga.config(text="Descarga terminada.")
@@ -885,12 +851,11 @@ class App(tk.Tk):
                 self._actualizar_estado()
                 texto = (f"Se descargaron {historial['LEAD_ID'].nunique()} leads "
                          f"({len(historial)} movimientos).")
-                con_anomalias = {lid for ids in anomalias.values() for lid in ids}
+                con_anomalias = {lid for grupo in anomalias.values() for lid in grupo}
                 if con_anomalias:
-                    texto += (f"\n\n{len(con_anomalias)} leads requieren revisión (varias etiquetas "
-                              "CIERRES, o sin FECHA DICTAMEN o ESTATUS DE NEGOCIO). Sus números "
-                              "están en el cuadro de mensajes y en leads_anomalos.txt, "
-                              "en la carpeta del periodo.")
+                    texto += (f"\n\n{len(con_anomalias)} leads requieren revisión (más de un "
+                              "asesor, o sin ESTATUS DE NEGOCIO). El detalle está en el cuadro de "
+                              f"mensajes y en {self._ruta_descarga.parent / 'leads_anomalos.txt'}.")
                 messagebox.showinfo("Historial descargado", texto)
                 return
         else:

@@ -36,7 +36,7 @@ from openpyxl.formatting.rule import CellIsRule
 
 import functions as fn
 from individual_reports import (COL_MOTIVO, MESES, NOMBRE_ARCHIVO_INDIVIDUAL, categoria_lead,
-                                normalizar)
+                                es_ganado, normalizar)
 
 CARPETA_INDIVIDUALES = "tablas/reportes/individuales"
 CARPETA_GENERALES = "tablas/reportes/generales"
@@ -45,17 +45,30 @@ PREFIJO_INDIVIDUAL = NOMBRE_ARCHIVO_INDIVIDUAL   # se define en individual_repor
 NOMBRE_ARCHIVO_GENERAL = "reporte_general_dictaminados"
 HOJA_ESTADO = "Estado actual"
 
-# Categoría de individual_reports.py -> columna del reporte general
+# CATEGORIA (valor en "Detalle completo") -> encabezado de su columna en
+# "Efectividad". Las fórmulas COUNTIFS buscan el valor de la CATEGORIA.
 COLUMNA_POR_CATEGORIA = {
-    "Logrado con éxito": "Ganados",
-    "Oferta": "Oferta",
-    "Oferta en espera": "Oferta en Espera",
-    "Documentación": "Documentación",
-    "Capturado": "Capturado",
-    "Venta perdida": "Lead Perdido",
-    "Sin capacidad": "Sin Capacidad",
-    "Dejado a futuro": "Bimestre",
+    "GANADOS": "Ganados",
+    "OFERTA": "Oferta",
+    "OFERTA EN ESPERA": "Oferta en Espera",
+    "DOCUMENTACION": "Documentación",
+    "CAPTURADO": "Capturado",
+    "LEAD PERDIDO": "Lead Perdido",
+    "SIN CAPACIDAD": "Sin Capacidad",
+    "BIMESTRE": "Bimestre",
     "Otros": "Otros",
+}
+CATEGORIA_POR_COLUMNA = {col: cat for cat, col in COLUMNA_POR_CATEGORIA.items()}
+# Títulos de la hoja "Estado actual" de los reportes individuales -> nombres internos
+COLUMNAS_ESTADO_INTERNAS = {
+    "LEAD": "LEAD_ID",
+    "CREACION": "creacion_de_lead",
+    "EMBUDO": "EMBUDO_ACTUAL",
+    "ETAPA ACTUAL": "ETAPA_ACTUAL",
+    "FECHA ULTIMO MOVIMIENTO": "FECHA_ULTIMO_MOVIMIENTO",
+    "TIEMPO TRANSCURRIDO": "TIEMPO_TRANSCURRIDO",
+    "TOTAL MOVIMIENTOS": "TOTAL_MOVIMIENTOS",
+    "RUTA LEAD": "RUTA",
 }
 # Etapas que forman los "Negocios cerrables"
 CERRABLES = ["Ganados", "Oferta", "Oferta en Espera", "Documentación", "Capturado", "Lead Perdido"]
@@ -137,6 +150,7 @@ def leer_reportes_individuales(carpeta, verbose=True, prefijo=""):
             if verbose:
                 print(f"  Omitido (sin hoja '{HOJA_ESTADO}'): {ruta.name}")
             continue
+        df = df.rename(columns={k: v for k, v in COLUMNAS_ESTADO_INTERNAS.items() if k in df.columns})
         df.insert(0, "ASESOR", _nombre_asesor(ruta))
         tablas.append(df)
         if verbose:
@@ -146,10 +160,13 @@ def leer_reportes_individuales(carpeta, verbose=True, prefijo=""):
         raise ValueError(f"Ningún archivo de {carpeta} tiene la hoja '{HOJA_ESTADO}'.")
 
     datos = pd.concat(tablas, ignore_index=True)
-    # "Sin Capacidad": etapa SIN CAPACIDAD o MOTIVO LEAD PERDIDO = SIN CAPACIDAD
-    motivos = datos[COL_MOTIVO] if COL_MOTIVO in datos.columns else [None] * len(datos)
-    datos["CATEGORIA"] = [COLUMNA_POR_CATEGORIA.get(categoria_lead(e, m))
-                          for e, m in zip(datos["ETAPA_ACTUAL"], motivos)]
+    # CATEGORIA según la etapa actual; COLUMNA = su columna en "Efectividad"
+    datos["CATEGORIA"] = datos["ETAPA_ACTUAL"].map(categoria_lead)
+    datos["COLUMNA"] = datos["CATEGORIA"].map(COLUMNA_POR_CATEGORIA)
+    if "GANADO" in datos.columns:
+        datos["GANADO"] = datos["GANADO"].fillna(False).astype(bool)
+    else:                                   # reportes individuales anteriores
+        datos["GANADO"] = datos["ETAPA_ACTUAL"].map(es_ganado).astype(bool)
     return datos
 
 
@@ -180,20 +197,20 @@ def _encabezados(ws, nombres, fila=2):
 def _hoja_detalle(wb, datos, orden_asesores, titulo):
     ws = wb.create_sheet("Detalle completo")
     columnas = [
-        ("Nombre", "ASESOR", 28, None),
-        ("ID Lead", "LEAD_ID", 12, None),
-        ("Etapa actual (Kommo)", "ETAPA_ACTUAL", 22, None),
-        ("Categoría", "CATEGORIA", 16, None),
-        ("¿Ganado?", None, 10, None),
-        ("Embudo actual", "EMBUDO_ACTUAL", 14, None),
-        ("Creación del lead", "creacion_de_lead", 20, FORMATO_FECHA),
+        ("NOMBRE", "ASESOR", 28, None),
+        ("LEAD", "LEAD_ID", 12, None),
+        ("ETAPA ACTUAL", "ETAPA_ACTUAL", 22, None),
+        ("CATEGORIA", "CATEGORIA", 18, None),
+        ("GANADO", "GANADO", 10, None),
+        ("EMBUDO ACTUAL", "EMBUDO_ACTUAL", 14, None),
+        ("CREACION", "creacion_de_lead", 20, FORMATO_FECHA),
         ("ESTATUS DE NEGOCIO", "ESTATUS DE NEGOCIO", 22, None),
         ("FECHA DICTAMEN", "FECHA DICTAMEN", 16, FORMATO_SOLO_FECHA),
         (COL_MOTIVO, COL_MOTIVO, 24, None),
-        ("Fecha último movimiento", "FECHA_ULTIMO_MOVIMIENTO", 20, FORMATO_FECHA),
-        ("Tiempo transcurrido", "TIEMPO_TRANSCURRIDO", 16, None),
-        ("Total movimientos", "TOTAL_MOVIMIENTOS", 12, None),
-        ("Ruta", "RUTA", 90, None),
+        ("FECHA ULTIMO MOVIMIENTO", "FECHA_ULTIMO_MOVIMIENTO", 20, FORMATO_FECHA),
+        ("TIEMPO TRANSCURRIDO", "TIEMPO_TRANSCURRIDO", 16, None),
+        ("TOTAL MOVIMIENTOS", "TOTAL_MOVIMIENTOS", 12, None),
+        ("RUTA LEAD", "RUTA", 90, None),
     ]
     _titulo(ws, titulo, len(columnas))
     _encabezados(ws, [c[0] for c in columnas])
@@ -205,8 +222,8 @@ def _hoja_detalle(wb, datos, orden_asesores, titulo):
     fila = 3
     for _, lead in datos.iterrows():
         for col, (_, campo, _, fmt) in enumerate(columnas, start=1):
-            if campo is None:
-                valor = "SÍ" if lead["CATEGORIA"] == "Ganados" else None
+            if campo == "GANADO":
+                valor = bool(lead.get("GANADO"))
             else:
                 valor = lead.get(campo)
                 if pd.isna(valor):
@@ -236,7 +253,7 @@ def _hoja_efectividad(wb, datos, orden_asesores, titulo, ultima_fila_detalle):
     ws = wb.active
     ws.title = "Efectividad"
 
-    hay_otros = (datos["CATEGORIA"] == "Otros").any()
+    hay_otros = (datos["COLUMNA"] == "Otros").any()
     extras = FUERA_DE_CERRABLES + (["Otros"] if hay_otros else [])
     columnas = ["Nombre", "Negocios cerrables"] + CERRABLES + extras + [
         "Total asignación", "% Efect. NETA", "% Efect. BRUTA"
@@ -248,7 +265,7 @@ def _hoja_efectividad(wb, datos, orden_asesores, titulo, ultima_fila_detalle):
 
     rango_nombre = f"'Detalle completo'!$A$3:$A${ultima_fila_detalle}"
     rango_categoria = f"'Detalle completo'!$D$3:$D${ultima_fila_detalle}"
-    conteos = datos.groupby(["ASESOR", "CATEGORIA"]).size()
+    conteos = datos.groupby(["ASESOR", "COLUMNA"]).size()
 
     fila = 3
     for asesor in orden_asesores:
@@ -258,7 +275,7 @@ def _hoja_efectividad(wb, datos, orden_asesores, titulo, ultima_fila_detalle):
             col = columnas.index(cat) + 1
             c = ws.cell(
                 row=fila, column=col,
-                value=f'=COUNTIFS({rango_nombre},$A{fila},{rango_categoria},"{cat}")',
+                value=f'=COUNTIFS({rango_nombre},$A{fila},{rango_categoria},"{CATEGORIA_POR_COLUMNA[cat]}")',
             )
             c.font = Font(name=FUENTE, bold=cat in ("Ganados", "Bimestre"))
             if conteos.get((asesor, cat), 0) > 0 and cat in COLORES:
@@ -325,8 +342,8 @@ def _orden_por_efectividad(datos):
     """Asesores ordenados por % Efect. NETA (desc), luego por ganados y nombre."""
     resumen = []
     for asesor, grupo in datos.groupby("ASESOR"):
-        cerrables = grupo["CATEGORIA"].isin(CERRABLES).sum()
-        ganados = (grupo["CATEGORIA"] == "Ganados").sum()
+        cerrables = grupo["COLUMNA"].isin(CERRABLES).sum()
+        ganados = (grupo["COLUMNA"] == "Ganados").sum()
         resumen.append((asesor, ganados / cerrables if cerrables else 0, ganados))
     resumen.sort(key=lambda x: (-x[1], -x[2], normalizar(x[0])))
     return [a for a, _, _ in resumen]
@@ -389,7 +406,7 @@ def generar_reporte_general(fecha=None, carpeta_individuales=None, carpeta_salid
     wb.save(ruta_salida)
 
     if verbose:
-        otros = datos.loc[datos["CATEGORIA"] == "Otros", "ETAPA_ACTUAL"].unique()
+        otros = datos.loc[datos["COLUMNA"] == "Otros", "ETAPA_ACTUAL"].unique()
         print(f"Reporte general generado: {fn.ruta_para_mostrar(ruta_salida)} "
               f"({len(orden)} asesores, {len(datos)} leads)")
         if len(otros):
