@@ -1,0 +1,29 @@
+{
+    "FECHA_DESDE": "01/09/2026",
+    "FECHA_HASTA": "28/09/2026",
+    "ARCHIVO_SALIDA": "ACUMULADOS.xlsx",
+    "FUENTES": [
+        {
+            "HOJA_DESTINO": "ACUMULADO CONTACTACION",
+            "ARCHIVO": "acumulados/SOLICITUD DE INFORMES 07.xlsx",
+            "HOJA_ORIGEN": "Sheet1",
+            "COLUMNA_ESTATUS": "ESTATUS",
+            "ESTATUS_INCLUIDOS": ["COMPRA MAYOR", "COMPRA MENOR", "NUEVO MAYOR", "NUEVO MENOR", "RESTRINGIDA"],
+            "COLUMNA_LEAD": "LEAD",
+            "LEADS_EXCLUIDOS": ["1", "2"],
+            "COLUMNA_FECHA": "FECHA",
+            "COLUMNAS_SALIDA": ["FECHA", "FECHA KOMMO", "Asesor", "NOMBRE CLIENTE", "NSS", "CURP", "LEAD", "TELEFONO", "ESTATUS", "INFORMEDEPAGO", "DESCUENTOS", "$0.30", "CAPACIDAD", "VENCIMIENTO", "FINANCIERA", "Monto compra", "Asignado", "Fecha asignacion"]
+        },
+        {
+            "HOJA_DESTINO": "ACUMULADO IA",
+            "ARCHIVO": "acumulados/SOLICITUD IA PRUEBA.xlsx",
+            "HOJA_ORIGEN": "Hoja1",
+            "COLUMNA_ESTATUS": "ESTATUS",
+            "ESTATUS_INCLUIDOS": ["COMPRA MAYOR", "COMPRA MENOR", "NUEVO MAYOR", "NUEVO MENOR", "RESTRINGIDA"],
+            "COLUMNA_LEAD": null,
+            "LEADS_EXCLUIDOS": [],
+            "COLUMNA_FECHA": "FECHA ASIG",
+            "COLUMNAS_SALIDA": ["ID Lead", "fecha", "Hora", "Nombre", "Telefono", "telefono2", "CURP", "NSS", "Fecha_de_nac", "Estado_de_nac", "ESTATUS", "INFORMEDEPAGO", "DESCUENTOS", "$0.30", "CAPACIDAD", "VENCIMIENTO", "FINANCIERA", "MONTO COMPRA", "ASIGNADO A", "FECHA ASIG"]
+        }
+    ]
+}

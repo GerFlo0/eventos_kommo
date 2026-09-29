@@ -3,9 +3,14 @@
         "FECHA_DESDE": null,
         "FECHA_HASTA": null,
         "CARPETA_HISTORIAL": "tablas",
+        "RUTA_ACUMULADOS": "ACUMULADOS.xlsx",
         "performance": {
             "VERBOSE": false,
             "THREADS": 4
         }
+    },
+    "acumulados": {
+        "SOLICITUD DE INFORMES 07": "https://rozherseguros-my.sharepoint.com/:x:/p/heriberto_castillo/IQBauyywDVmLSJldJO5ztbgvAfmGqUMv-p8ByNGE5-zooVQ?e=TBvZZ1",
+        "SOLICITUD IA PRUEBA": "https://rozherseguros-my.sharepoint.com/:x:/p/heriberto_castillo/IQB4itr21zzLTLbbJc5yaKebAdFfBHeVWtc-Xcyiz_Tk36w?e=hIKzAQ"
     }
 }

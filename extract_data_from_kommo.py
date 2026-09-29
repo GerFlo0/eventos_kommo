@@ -10,7 +10,8 @@ un Excel con:
     cambio de etapa o de embudo), con las columnas
         LEAD, EMBUDO, CREACION, ESTATUS DE NEGOCIO, FECHA DICTAMEN,
         MONTO OTORGADO, MOTIVO LEAD PERDIDO, ETIQUETAS, ETAPA ANTERIOR,
-        ETAPA NUEVA, FECHA EVENTO, DIAS ETAPA ANTERIOR
+        ETAPA NUEVA, FECHA EVENTO, DIAS ETAPA ANTERIOR, BUZON
+    (BUZON = usuario responsable del lead en Kommo)
   - Hoja "PIVOTE": un renglón por lead, una columna por "EMBUDO - ETAPA" con la
     primera fecha en que el lead entró a esa etapa, más EMBUDO ACTUAL y
     CAMBIOS DE EMBUDO.
@@ -29,9 +30,12 @@ Además genera, junto al historial, el reporte de leads anómalos:
   - leads_anomalos.txt  (para leerlo) y leads_anomalos.json (lo usan los
     reportes para asignar los leads con más de un asesor):
       * más de un asesor en sus etiquetas, con la fecha de cada etiqueta y el
-        asesor asignado (el de la etiqueta más reciente; en empate, ninguno:
-        el lead cuenta para todos),
-      * con FECHA DICTAMEN pero sin ESTATUS DE NEGOCIO
+        asesor asignado: el que corresponde a su BUZÓN si es uno de ellos; si
+        no, el de la etiqueta más reciente; en empate, ninguno (cuenta para
+        todos),
+      * con FECHA DICTAMEN pero sin ESTATUS DE NEGOCIO,
+      * en ACUMULADOS (configuration.json -> RUTA_ACUMULADOS) pero no en el
+        historial
 
 Uso:
     python extract_data_from_kommo.py      # guarda en CARPETA_HISTORIAL
@@ -58,6 +62,7 @@ import pandas as pd
 import requests
 from requests.adapters import HTTPAdapter
 
+import acumulados as acum
 import functions as fn
 
 config = fn.import_json("json/configuration.json")
@@ -107,6 +112,7 @@ HEADERS = {"Authorization": f"Bearer {TOKEN}"}
 
 COL_ETIQUETAS = "ETIQUETAS"
 COL_CREACION = "CREACION"
+COL_BUZON = "BUZON"          # usuario responsable del lead en Kommo
 # Encabezados de la hoja HISTORIAL (nombre interno -> título en el Excel).
 # Los campos de la tarjeta usan tal cual su nombre de campos_tarjeta.
 ENCABEZADOS_HISTORIAL = {
@@ -437,6 +443,7 @@ def _tarjeta(lead):
                  if t.get("name")]
     return {"campos": campos, "etiquetas": etiquetas,
             "asesores": asesores_en_etiquetas(etiquetas),
+            "responsable_id": lead.get("responsible_user_id"), "buzon": None,
             "creacion": _fecha(lead.get("created_at")),
             "pipeline_id": lead.get("pipeline_id"), "status_id": lead.get("status_id")}
 
@@ -465,6 +472,33 @@ def identificar_leads(etapas, embudos):
     tarjetas = {lid: _tarjeta(lead) for lid, lead in leads.items()}
     log(f"  {len(leads)} leads en los embudos")
     return {lid: t for lid, t in tarjetas.items() if t["asesores"]}
+
+
+def cargar_usuarios():
+    """{user_id: nombre} de los usuarios de Kommo (para el BUZON)."""
+    return {u["id"]: u.get("name") for u in _paginar(f"{BASE}/users", {"limit": 250}, "users")}
+
+
+def asignar_buzones(tarjetas):
+    """Pone en cada tarjeta el nombre de su usuario responsable (buzón)."""
+    usuarios = cargar_usuarios()
+    for t in tarjetas.values():
+        t["buzon"] = usuarios.get(t.get("responsable_id"))
+    return tarjetas
+
+
+def asesor_del_buzon(buzon, asesores):
+    """Asesor (de los indicados) que corresponde al buzón, o None.
+
+    El buzón puede ser el nombre completo ("GABRIELA SANCHEZ CIERRES") o una
+    parte ("ANDRE TREVIÑO", "IRASEMA"); buzones genéricos ("MATAMOROS 3") no
+    corresponden a nadie. Si corresponde a más de uno, no se decide.
+    """
+    texto = normalizar(buzon).replace(" cierres", "").strip()
+    if not texto:
+        return None
+    candidatos = [a for a in asesores if texto in normalizar(a)]
+    return candidatos[0] if len(candidatos) == 1 else None
 
 
 def eventos_de_leads(lead_ids, tipos, avance=None):
@@ -555,6 +589,7 @@ def aplicar_tarjetas(filas, tarjetas):
     for fila in filas:
         tarjeta = tarjetas[fila["LEAD_ID"]]
         fila[COL_CREACION] = tarjeta["creacion"]
+        fila[COL_BUZON] = tarjeta.get("buzon")
         fila.update(tarjeta["campos"])
     return filas
 
@@ -598,10 +633,23 @@ def revisar_anomalias(tarjetas):
     return {"varias_asesores": varias, "dictamen_sin_estatus": con_dictamen}
 
 
+def acumulados_sin_historial(tarjetas):
+    """LEAD_IDs de ACUMULADOS que no quedaron en el historial. Si ACUMULADOS no
+    está configurado o no se puede leer, se avisa y no se revisa."""
+    try:
+        ids = set(acum.leer_acumulados()["LEAD_ID"])
+    except (OSError, ValueError) as e:
+        print(f"Aviso: no se revisó ACUMULADOS ({e})")
+        return []
+    return sorted(ids - set(tarjetas))
+
+
 def fechar_asesores(varias, tarjetas):
     """Fecha en que se puso la etiqueta de cada asesor (eventos 'etiqueta
-    agregada', sin límite de fechas) y asesor asignado: el de la etiqueta más
-    reciente. En empate, o si no hay fechas, no se asigna (cuenta para todos).
+    agregada', sin límite de fechas) y asesor asignado:
+      1. el asesor que corresponde al BUZÓN del lead, si es uno de sus asesores;
+      2. si no, el de la etiqueta más reciente;
+      3. en empate, o si no hay fechas, no se asigna (cuenta para todos).
     Una etiqueta sin evento se considera más antigua que las que sí lo tienen.
     """
     ultima = {}                                    # (LEAD_ID, asesor) -> timestamp
@@ -617,7 +665,14 @@ def fechar_asesores(varias, tarjetas):
         mas_reciente = max(conocidas.values(), default=None)
         ganadores = [a for a, f in conocidas.items() if f == mas_reciente]
         datos["asesores"] = {a: _fecha(f) for a, f in fechas.items()}
-        datos["asignado"] = ganadores[0] if len(ganadores) == 1 else None
+        datos["buzon"] = tarjetas[lid].get("buzon")
+        por_buzon = asesor_del_buzon(datos["buzon"], tarjetas[lid]["asesores"])
+        if por_buzon:
+            datos["asignado"], datos["criterio"] = por_buzon, "buzón"
+        elif len(ganadores) == 1:
+            datos["asignado"], datos["criterio"] = ganadores[0], "etiqueta más reciente"
+        else:
+            datos["asignado"], datos["criterio"] = None, "empate"
     return varias
 
 
@@ -628,10 +683,15 @@ def texto_anomalias(anomalias):
     for lid, datos in varias.items():
         fechas = ", ".join(f"{a} ({f:%d/%m/%Y %H:%M})" if f else f"{a} (sin fecha)"
                            for a, f in datos["asesores"].items())
-        destino = (f"asignado a {datos['asignado']}" if datos["asignado"]
-                   else "empate: cuenta para todos")
+        destino = (f"asignado a {datos['asignado']} (por {datos.get('criterio', 'etiqueta más reciente')})"
+                   if datos["asignado"] else "empate: cuenta para todos")
+        if datos.get("buzon"):
+            destino += f" | buzón: {datos['buzon']}"
         lineas.append(f"  {lid}: {fechas} -> {destino}")
-    for clave, titulo in (("dictamen_sin_estatus", "Leads con FECHA DICTAMEN pero sin ESTATUS DE NEGOCIO"),):
+    for clave, titulo in (("dictamen_sin_estatus", "Leads con FECHA DICTAMEN pero sin ESTATUS DE NEGOCIO"),
+                          ("en_acumulados_sin_historial",
+                           "Leads en ACUMULADOS pero no en el historial (sin etiqueta de un asesor de "
+                           "secret.json, o fuera de los embudos)")):
         ids = anomalias.get(clave) or []
         lineas.append(f"\n{titulo} ({len(ids)}):")
         if ids:
@@ -650,9 +710,10 @@ def guardar_anomalias(carpeta, anomalias):
             {"lead": lid,
              "asesores": [{"asesor": a, "fecha_etiqueta": f.isoformat() if f else None}
                           for a, f in d["asesores"].items()],
-             "asignado": d["asignado"]}
+             "asignado": d["asignado"], "criterio": d.get("criterio"), "buzon": d.get("buzon")}
             for lid, d in (anomalias.get("varias_asesores") or {}).items()],
         "dictamen_sin_estatus": list(anomalias.get("dictamen_sin_estatus") or []),
+        "en_acumulados_sin_historial": list(anomalias.get("en_acumulados_sin_historial") or []),
     }
     try:
         # utf-8-sig: el Bloc de notas de Windows muestra bien los acentos
@@ -672,7 +733,8 @@ def guardar_anomalias(carpeta, anomalias):
 def cols_historial():
     """Columnas de la hoja HISTORIAL (nombres internos), en orden."""
     return (["LEAD_ID", "EMBUDO", COL_CREACION] + list(CAMPOS_TARJETA) +
-            [COL_ETIQUETAS, "ETAPA_ANTERIOR", "ETAPA_NUEVA", "FECHA", "DIAS_EN_ETAPA_ANTERIOR"])
+            [COL_ETIQUETAS, "ETAPA_ANTERIOR", "ETAPA_NUEVA", "FECHA", "DIAS_EN_ETAPA_ANTERIOR",
+             COL_BUZON])
 
 
 def escribir_excel(ruta, df, etiquetas):
@@ -729,6 +791,7 @@ def main(salida=None, guardar_anomalias_junto=True):
     if not tarjetas:
         sys.exit("Ningún lead de los embudos tiene en sus etiquetas a un asesor de secret.json.")
     print(f"Leads con etiqueta de un asesor: {len(tarjetas)}")
+    asignar_buzones(tarjetas)
 
     _avisar(0.25, f"Descargando los movimientos de {len(tarjetas)} leads...")
     eventos = eventos_de_leads(tarjetas, ["lead_status_changed", "lead_added"], avance=(0.25, 0.85))
@@ -737,6 +800,7 @@ def main(salida=None, guardar_anomalias_junto=True):
         sys.exit("No hubo movimientos de esos leads en los embudos configurados.")
 
     anomalias = revisar_anomalias(tarjetas)
+    anomalias["en_acumulados_sin_historial"] = acumulados_sin_historial(tarjetas)
     if anomalias["varias_asesores"]:
         _avisar(0.87, "Revisando leads con varios asesores...")
         fechar_asesores(anomalias["varias_asesores"], tarjetas)

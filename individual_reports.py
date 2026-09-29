@@ -51,8 +51,13 @@ CATEGORIAS = [
 ]
 CATEGORIA_GANADOS = "GANADOS"
 CATEGORIA_FUTURO = "BIMESTRE"          # leads dejados a futuro: la etapa contiene "20"
-CATEGORIA_OTROS = "Otros"              # cualquier etapa no contemplada arriba
-ORDEN_CATEGORIAS = [c for c, _ in CATEGORIAS] + [CATEGORIA_FUTURO, CATEGORIA_OTROS]
+CATEGORIA_OTROS = "Otros"              # ya no se usa: las etapas no clasificadas van a SIN CAPACIDAD
+CATEGORIA_SIN_CAPACIDAD = "SIN CAPACIDAD"
+CATEGORIA_PERDIDO = "LEAD PERDIDO"
+# Como en el reporte de Cloud: un lead perdido con alguno de estos motivos
+# (MOTIVO LEAD PERDIDO, aunque venga junto con otros) cuenta como SIN CAPACIDAD.
+MOTIVOS_SIN_CAPACIDAD = ["sin capacidad", "ley 97", "sin nomina/no vigente"]
+ORDEN_CATEGORIAS = [c for c, _ in CATEGORIAS] + [CATEGORIA_FUTURO]
 
 _MAPA_ETAPAS = {alias: cat for cat, aliases in CATEGORIAS for alias in aliases}
 
@@ -83,7 +88,12 @@ def clasificar_etapa(etapa):
         return _MAPA_ETAPAS[etapa_norm]
     if es_dejado_a_futuro(etapa):
         return CATEGORIA_FUTURO
-    return CATEGORIA_OTROS
+    return CATEGORIA_SIN_CAPACIDAD        # como Cloud: p. ej. "Contactado"
+
+
+def etapa_no_clasificada(etapa):
+    """True si la etapa no corresponde a ninguna categoría (cuenta como SIN CAPACIDAD)."""
+    return normalizar(etapa) not in _MAPA_ETAPAS and not es_dejado_a_futuro(etapa)
 
 
 def es_dejado_a_futuro(etapa):
@@ -102,9 +112,15 @@ FORMATO_DINERO = '"$"#,##0.00'
 
 
 def categoria_lead(etapa, motivo=None):
-    """Categoría de un lead según su etapa actual. El MOTIVO LEAD PERDIDO es
-    solo informativo: SIN CAPACIDAD se determina únicamente por la etapa."""
-    return clasificar_etapa(etapa)
+    """Categoría de un lead según su etapa actual, con la regla de Cloud: un lead
+    perdido cuyo MOTIVO LEAD PERDIDO incluye SIN CAPACIDAD, LEY 97 o SIN
+    NOMINA/NO VIGENTE cuenta como SIN CAPACIDAD."""
+    categoria = clasificar_etapa(etapa)
+    if categoria == CATEGORIA_PERDIDO and motivo is not None and not pd.isna(motivo):
+        texto = normalizar(motivo)
+        if any(m in texto for m in MOTIVOS_SIN_CAPACIDAD):
+            return CATEGORIA_SIN_CAPACIDAD
+    return categoria
 
 
 # Títulos de la hoja HISTORIAL (extract_data_from_kommo.py) -> nombres que
@@ -240,6 +256,13 @@ def generar_reporte(df, fecha_corte):
     ultimos["ETIQUETAS"] = ultimos["LEAD_ID"].map(etiquetas)
     ultimos["RUTA"] = ultimos["LEAD_ID"].map(rutas)
     ultimos["GANADO"] = ultimos["ETAPA_NUEVA"].map(es_ganado).astype(bool)
+    # Primera vez que el lead llegó a una etapa de ganado (OTORGADO / Leads ganados)
+    ganados = hist[hist["ETAPA_NUEVA"].map(es_ganado)]
+    primera = ganados.groupby("LEAD_ID")["FECHA"].min().to_dict()
+    ultimos["FECHA_OTORGADO"] = pd.to_datetime(ultimos["LEAD_ID"].map(primera), errors="coerce")
+    for col in ("BUZON", "ORIGEN"):            # dato del lead: el último no vacío
+        if col in hist.columns:
+            ultimos[col] = ultimos["LEAD_ID"].map(hist.groupby("LEAD_ID")[col].last())
     ultimos["DEJADO A FUTURO"] = ultimos["ETAPA_NUEVA"].map(es_dejado_a_futuro).astype(bool)
 
     ultimos["_orden"] = ultimos["ESTADO_ACTUAL"].map(ORDEN_CATEGORIAS.index)
@@ -250,6 +273,7 @@ def generar_reporte(df, fecha_corte):
         "DIAS_DESDE_ULTIMO_MOVIMIENTO", "TIEMPO_TRANSCURRIDO", "ETAPA_ANTERIOR",
         "ESTATUS DE NEGOCIO", "FECHA DICTAMEN", COL_MOTIVO, "TOTAL_MOVIMIENTOS", "RUTA",
         "ETIQUETAS", "EMBUDO", "GANADO", "DEJADO A FUTURO", COL_MONTO,
+        "BUZON", "ORIGEN", "FECHA_OTORGADO",
     ]
     estado = (
         ultimos[[c for c in columnas_estado if c in ultimos.columns]]
@@ -349,6 +373,10 @@ COLUMNAS_HOJA_ESTADO = [
     ("TIEMPO_TRANSCURRIDO", "TIEMPO TRANSCURRIDO"),
     ("TOTAL_MOVIMIENTOS", "TOTAL MOVIMIENTOS"),
     ("RUTA", "RUTA LEAD"),
+    # agregadas al final para no mover las anteriores
+    ("BUZON", "BUZON"),
+    ("ORIGEN", "ORIGEN"),
+    ("FECHA_OTORGADO", "FECHA OTORGADO"),
 ]
 COLUMNAS_BLOQUE = [
     ("PASO", "PASO", 8, None),
@@ -490,7 +518,7 @@ def escribir_excel(hojas, ruta, fecha_corte, asesor=""):
             "El tiempo transcurrido se calcula desde la última actualización de etapa hasta la fecha de corte (momento en que se generó el reporte).",
             "Las categorías dependen de la etapa actual del lead, igual que en el reporte general.",
             "'BIMESTRE' agrupa los leads dejados a futuro (la etapa contiene \"20\", p. ej. \"ENERO 2027\").",
-            "'Otros' agrupa etapas no contempladas en la clasificación; revisarlas si aparecen.",
+            "'SIN CAPACIDAD' incluye las etapas no clasificadas (p. ej. Contactado) y los leads perdidos por SIN CAPACIDAD, LEY 97 o SIN NOMINA/NO VIGENTE.",
             "En 'Historial por lead', los días en la etapa nueva del último cambio se cuentan hasta la fecha de corte.",
         ]
         for i, texto in enumerate(notas, start=1):
@@ -502,6 +530,7 @@ def escribir_excel(hojas, ruta, fecha_corte, asesor=""):
         _dar_formato(ws, 1, {
             "CREACION": FORMATO_FECHA,
             "FECHA ULTIMO MOVIMIENTO": FORMATO_FECHA,
+            "FECHA OTORGADO": FORMATO_FECHA,
             COL_MONTO: FORMATO_DINERO,
         })
         _formato_fecha_sin_hora(ws, "FECHA DICTAMEN")

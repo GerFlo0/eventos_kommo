@@ -36,7 +36,7 @@ from openpyxl.formatting.rule import CellIsRule
 
 import functions as fn
 from individual_reports import (COL_MOTIVO, MESES, NOMBRE_ARCHIVO_INDIVIDUAL, categoria_lead,
-                                es_ganado, normalizar)
+                                es_ganado, etapa_no_clasificada, normalizar)
 
 CARPETA_INDIVIDUALES = "tablas/reportes/individuales"
 CARPETA_GENERALES = "tablas/reportes/generales"
@@ -69,6 +69,7 @@ COLUMNAS_ESTADO_INTERNAS = {
     "TIEMPO TRANSCURRIDO": "TIEMPO_TRANSCURRIDO",
     "TOTAL MOVIMIENTOS": "TOTAL_MOVIMIENTOS",
     "RUTA LEAD": "RUTA",
+    "FECHA OTORGADO": "FECHA_OTORGADO",
 }
 # Etapas que forman los "Negocios cerrables"
 CERRABLES = ["Ganados", "Oferta", "Oferta en Espera", "Documentación", "Capturado", "Lead Perdido"]
@@ -94,6 +95,8 @@ UMBRAL_BRUTA = 0.20
 VERDE = "C8E6C9"
 FORMATO_FECHA = "dd/mm/yyyy hh:mm"
 FORMATO_SOLO_FECHA = "dd/mm/yyyy"
+FORMATO_DINERO = '"$"#,##0.00'
+COL_MONTO = "MONTO OTORGADO"
 _RELLENO_AZUL = PatternFill("solid", start_color=AZUL)
 _BORDE = Border(*(Side(style="thin", color="BFBFBF"),) * 4)
 _CENTRO = Alignment(horizontal="center", vertical="center", wrap_text=True)
@@ -161,7 +164,9 @@ def leer_reportes_individuales(carpeta, verbose=True, prefijo=""):
 
     datos = pd.concat(tablas, ignore_index=True)
     # CATEGORIA según la etapa actual; COLUMNA = su columna en "Efectividad"
-    datos["CATEGORIA"] = datos["ETAPA_ACTUAL"].map(categoria_lead)
+    # (regla de Cloud: lead perdido con motivo SIN CAPACIDAD / LEY 97 / SIN NOMINA -> SIN CAPACIDAD)
+    motivos = datos[COL_MOTIVO] if COL_MOTIVO in datos.columns else [None] * len(datos)
+    datos["CATEGORIA"] = [categoria_lead(e, m) for e, m in zip(datos["ETAPA_ACTUAL"], motivos)]
     datos["COLUMNA"] = datos["CATEGORIA"].map(COLUMNA_POR_CATEGORIA)
     if "GANADO" in datos.columns:
         datos["GANADO"] = datos["GANADO"].fillna(False).astype(bool)
@@ -196,23 +201,34 @@ def _encabezados(ws, nombres, fila=2):
 
 def _hoja_detalle(wb, datos, orden_asesores, titulo):
     ws = wb.create_sheet("Detalle completo")
-    columnas = [
-        ("NOMBRE", "ASESOR", 28, None),
-        ("LEAD", "LEAD_ID", 12, None),
-        ("ETAPA ACTUAL", "ETAPA_ACTUAL", 22, None),
-        ("CATEGORIA", "CATEGORIA", 18, None),
-        ("GANADO", "GANADO", 10, None),
-        ("EMBUDO ACTUAL", "EMBUDO_ACTUAL", 14, None),
-        ("CREACION", "creacion_de_lead", 20, FORMATO_FECHA),
-        ("ESTATUS DE NEGOCIO", "ESTATUS DE NEGOCIO", 22, None),
-        ("FECHA DICTAMEN", "FECHA DICTAMEN", 16, FORMATO_SOLO_FECHA),
-        (COL_MOTIVO, COL_MOTIVO, 24, None),
-        ("FECHA ULTIMO MOVIMIENTO", "FECHA_ULTIMO_MOVIMIENTO", 20, FORMATO_FECHA),
-        ("TIEMPO TRANSCURRIDO", "TIEMPO_TRANSCURRIDO", 16, None),
-        ("TOTAL MOVIMIENTOS", "TOTAL_MOVIMIENTOS", 12, None),
-        ("RUTA LEAD", "RUTA", 90, None),
-    ]
+    columnas = COLUMNAS_DETALLE
     _titulo(ws, titulo, len(columnas))
+    return _llenar_detalle(ws, datos, orden_asesores, columnas)
+
+
+COLUMNAS_DETALLE = [
+    ("NOMBRE", "ASESOR", 28, None),
+    ("LEAD", "LEAD_ID", 12, None),
+    ("ETAPA ACTUAL", "ETAPA_ACTUAL", 22, None),
+    ("CATEGORIA", "CATEGORIA", 18, None),
+    ("GANADO", "GANADO", 10, None),
+    ("EMBUDO ACTUAL", "EMBUDO_ACTUAL", 14, None),
+    ("CREACION", "creacion_de_lead", 20, FORMATO_FECHA),
+    ("ESTATUS DE NEGOCIO", "ESTATUS DE NEGOCIO", 22, None),
+    ("FECHA DICTAMEN", "FECHA DICTAMEN", 16, FORMATO_SOLO_FECHA),
+    (COL_MOTIVO, COL_MOTIVO, 24, None),
+    ("FECHA ULTIMO MOVIMIENTO", "FECHA_ULTIMO_MOVIMIENTO", 20, FORMATO_FECHA),
+    ("TIEMPO TRANSCURRIDO", "TIEMPO_TRANSCURRIDO", 16, None),
+    ("TOTAL MOVIMIENTOS", "TOTAL_MOVIMIENTOS", 12, None),
+    ("RUTA LEAD", "RUTA", 90, None),
+    # agregadas al final para no mover las anteriores (las fórmulas usan A y D)
+    ("BUZON", "BUZON", 24, None),
+    ("ORIGEN", "ORIGEN", 14, None),
+    (COL_MONTO, COL_MONTO, 16, FORMATO_DINERO),
+]
+
+
+def _llenar_detalle(ws, datos, orden_asesores, columnas):
     _encabezados(ws, [c[0] for c in columnas])
 
     datos = datos.copy()
@@ -338,6 +354,104 @@ def _hoja_efectividad(wb, datos, orden_asesores, titulo, ultima_fila_detalle):
     return ws
 
 
+def _letra_detalle(encabezado):
+    """Letra de la columna de "Detalle completo" con ese encabezado."""
+    for i, (titulo, *_resto) in enumerate(COLUMNAS_DETALLE, start=1):
+        if titulo == encabezado:
+            return get_column_letter(i)
+    raise KeyError(encabezado)
+
+
+def _hoja_monto(wb, datos, titulo, ultima_fila_detalle):
+    """Ganados y monto otorgado por asesor (fórmulas sobre "Detalle completo"),
+    ordenado por monto total."""
+    ws = wb.create_sheet("Monto otorgado")
+    columnas = ["Nombre", "Ganados", "Monto total", "Monto promedio x crédito"]
+    _titulo(ws, titulo, len(columnas))
+    _encabezados(ws, columnas)
+    fin = ultima_fila_detalle
+    rango_nombre = f"'Detalle completo'!$A$3:$A${fin}"
+    rango_categoria = f"'Detalle completo'!$D$3:$D${fin}"
+    rango_monto = f"'Detalle completo'!${_letra_detalle(COL_MONTO)}$3:${_letra_detalle(COL_MONTO)}${fin}"
+    ganados = datos[datos["CATEGORIA"] == "GANADOS"]
+    montos = pd.to_numeric(ganados.get(COL_MONTO), errors="coerce").groupby(ganados["ASESOR"]).sum()
+    orden = sorted(datos["ASESOR"].unique(), key=lambda a: (-float(montos.get(a, 0)), normalizar(a)))
+    fila = 3
+    for asesor in orden:
+        ws.cell(row=fila, column=1, value=asesor).font = Font(name=FUENTE, bold=True)
+        ws.cell(row=fila, column=2, value=f'=COUNTIFS({rango_nombre},$A{fila},{rango_categoria},"GANADOS")')
+        c = ws.cell(row=fila, column=3,
+                    value=f'=SUMIFS({rango_monto},{rango_nombre},$A{fila},{rango_categoria},"GANADOS")')
+        c.number_format = FORMATO_DINERO
+        c = ws.cell(row=fila, column=4, value=f"=IFERROR(C{fila}/B{fila},0)")
+        c.number_format = FORMATO_DINERO
+        for col in range(1, 5):
+            ws.cell(row=fila, column=col).border = _BORDE
+        fila += 1
+    ws.cell(row=fila, column=1, value="TOTAL").font = Font(name=FUENTE, bold=True)
+    ws.cell(row=fila, column=2, value=f"=SUM(B3:B{fila - 1})").font = Font(name=FUENTE, bold=True)
+    c = ws.cell(row=fila, column=3, value=f"=SUM(C3:C{fila - 1})")
+    c.font, c.number_format = Font(name=FUENTE, bold=True), FORMATO_DINERO
+    c = ws.cell(row=fila, column=4, value=f"=IFERROR(C{fila}/B{fila},0)")
+    c.font, c.number_format = Font(name=FUENTE, bold=True), FORMATO_DINERO
+    for col, ancho in zip("ABCD", (28, 12, 18, 22)):
+        ws.column_dimensions[col].width = ancho
+    ws.freeze_panes = "A3"
+    return ws
+
+
+COLUMNAS_VENTAS_DIA = [
+    ("NOMBRE", "ASESOR", 28, None),
+    ("LEAD", "LEAD_ID", 12, None),
+    ("FECHA Y HORA DE OTORGADO", "FECHA_OTORGADO", 22, FORMATO_FECHA),
+    ("EMBUDO", "EMBUDO_ACTUAL", 14, None),
+    ("ETAPA ACTUAL", "ETAPA_ACTUAL", 22, None),
+    ("ESTATUS DE NEGOCIO", "ESTATUS DE NEGOCIO", 26, None),
+    (COL_MONTO, COL_MONTO, 16, FORMATO_DINERO),
+]
+
+
+def ventas_del_dia(datos, fecha):
+    """Leads que llegaron por primera vez a una etapa de ganado el día `fecha`
+    (no estaban en otorgado antes de ese día)."""
+    if "FECHA_OTORGADO" not in datos.columns:
+        return datos.iloc[0:0]
+    otorgado = pd.to_datetime(datos["FECHA_OTORGADO"], errors="coerce")
+    return datos[otorgado.dt.date == fecha].sort_values(["ASESOR", "LEAD_ID"])
+
+
+def _hoja_ventas_dia(wb, datos, fecha, titulo):
+    ws = wb.create_sheet("Ventas del día")
+    _titulo(ws, titulo, len(COLUMNAS_VENTAS_DIA))
+    _encabezados(ws, [c[0] for c in COLUMNAS_VENTAS_DIA])
+    ventas = ventas_del_dia(datos, fecha)
+    fila = 3
+    for _, lead in ventas.iterrows():
+        for col, (_, campo, _, fmt) in enumerate(COLUMNAS_VENTAS_DIA, start=1):
+            valor = lead.get(campo)
+            if valor is None or (not isinstance(valor, str) and pd.isna(valor)):
+                valor = None
+            elif isinstance(valor, pd.Timestamp):
+                valor = valor.to_pydatetime()
+            c = ws.cell(row=fila, column=col, value=valor)
+            c.font, c.border = Font(name=FUENTE, bold=(col == 1)), _BORDE
+            if fmt:
+                c.number_format = fmt
+        fila += 1
+    if ventas.empty:
+        ws.cell(row=3, column=1, value="Ningún lead llegó a otorgado este día.").font = Font(name=FUENTE)
+    else:
+        ws.cell(row=fila, column=1, value="TOTAL").font = Font(name=FUENTE, bold=True)
+        ws.cell(row=fila, column=2, value=f"=COUNTA(B3:B{fila - 1})").font = Font(name=FUENTE, bold=True)
+        col_monto = get_column_letter(len(COLUMNAS_VENTAS_DIA))
+        c = ws.cell(row=fila, column=len(COLUMNAS_VENTAS_DIA), value=f"=SUM({col_monto}3:{col_monto}{fila - 1})")
+        c.font, c.number_format = Font(name=FUENTE, bold=True), FORMATO_DINERO
+    for col, (_, _, ancho, _) in enumerate(COLUMNAS_VENTAS_DIA, start=1):
+        ws.column_dimensions[get_column_letter(col)].width = ancho
+    ws.freeze_panes = "A3"
+    return ws, len(ventas)
+
+
 def _orden_por_efectividad(datos):
     """Asesores ordenados por % Efect. NETA (desc), luego por ganados y nombre."""
     resumen = []
@@ -401,16 +515,20 @@ def generar_reporte_general(fecha=None, carpeta_individuales=None, carpeta_salid
     wb = Workbook()
     _, ultima_fila = _hoja_detalle(wb, datos, orden, f"{base_titulo} — DETALLE COMPLETO")
     _hoja_efectividad(wb, datos, orden, f"{base_titulo} · ordenado por % Efect. NETA", ultima_fila)
+    _hoja_monto(wb, datos, f"{base_titulo} — Monto otorgado por asesor", ultima_fila)
+    _, n_ventas = _hoja_ventas_dia(wb, datos, fecha, f"VENTAS DEL DÍA {fecha:%d/%m/%Y} — leads que "
+                                                     "llegaron a otorgado ese día")
+    wb.move_sheet("Detalle completo", offset=len(wb.sheetnames) - 1 - wb.sheetnames.index("Detalle completo"))
 
     ruta_salida.parent.mkdir(parents=True, exist_ok=True)
     wb.save(ruta_salida)
 
     if verbose:
-        otros = datos.loc[datos["COLUMNA"] == "Otros", "ETAPA_ACTUAL"].unique()
+        otros = datos.loc[datos["ETAPA_ACTUAL"].map(etapa_no_clasificada), "ETAPA_ACTUAL"].unique()
         print(f"Reporte general generado: {fn.ruta_para_mostrar(ruta_salida)} "
-              f"({len(orden)} asesores, {len(datos)} leads)")
+              f"({len(orden)} asesores, {len(datos)} leads, {n_ventas} ventas del día)")
         if len(otros):
-            print(f"  Aviso: etapas sin clasificar (columna 'Otros'): {', '.join(map(str, otros))}")
+            print(f"  Aviso: etapas sin clasificar, contadas como SIN CAPACIDAD: {', '.join(map(str, otros))}")
         # Un lead con etiquetas de dos asesores sale en ambos reportes
         # individuales y se cuenta en los dos.
         por_lead = datos.groupby("LEAD_ID")["ASESOR"].nunique()

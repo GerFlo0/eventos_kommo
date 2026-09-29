@@ -2,26 +2,29 @@
 Programa para descargar el historial de etapas de Kommo y generar los
 reportes individuales y el reporte general.
 
-En la ventana se elige:
-  - el periodo (FECHA_DESDE y FECHA_HASTA) con un calendario;
-  - la carpeta donde se guardan los reportes: todos quedan en
+Qué leads entran en los reportes: todos los del archivo ACUMULADOS
+(configuration.json -> RUTA_ACUMULADOS; hojas "ACUMULADO CONTACTACION" e
+"ACUMULADO IA"). El periodo también sale de ahí: su fecha más antigua es
+FECHA_DESDE y la más reciente FECHA_HASTA (nombre de la carpeta, título y
+"Ventas del día").
+
+En la ventana:
+  - se ve el ACUMULADOS cargado (periodo, leads y cuántos no están en el
+    historial) y se puede recargar;
+  - se elige la carpeta donde se guardan los reportes: todos quedan en
     <carpeta>/<FECHA_HASTA como AAAA-MM-DD>/;
-  - descargar el historial de Kommo (con barra de avance): el historial
+  - se descarga el historial de Kommo (con barra de avance): el historial
     completo de los leads de los asesores, sin límite de fechas. Se guarda en
     configuration.json -> CARPETA_HISTORIAL (se reemplaza en cada descarga),
     junto con su .info.json y el reporte de leads anómalos (.txt y .json).
     La ventana muestra la fecha de creación del historial cargado;
-  - qué estatus de negocio incluir (lista de secret.json);
-  - si usar todos los leads del historial o solo los que tienen su FECHA
-    DICTAMEN entre FECHA_DESDE y FECHA_HASTA (inclusive);
+  - se eligen los estatus de negocio a incluir (lista de secret.json);
   - un texto opcional al inicio del nombre de los archivos.
 
-Para generar reportes hace falta el historial en CARPETA_HISTORIAL y una
-carpeta de reportes elegida.
-Las fechas y la carpeta se recuerdan entre usos (preferencias.json en la
+Para generar reportes hacen falta el historial, ACUMULADOS y una carpeta de
+reportes elegida. La carpeta se recuerda entre usos (preferencias.json en la
 carpeta de datos del programa; ver functions.carpeta_datos()).
 """
-import calendar
 import contextlib
 import glob
 import json
@@ -40,10 +43,11 @@ import duckdb as db
 import pandas as pd
 import requests
 
+import acumulados as acum
 import functions as fn
 from general_report import (CARPETA_INDIVIDUALES, NOMBRE_ARCHIVO_GENERAL, PREFIJO_INDIVIDUAL,
                             carpeta_del_dia, generar_reporte_general)
-from individual_reports import (MESES, _nombre_archivo, aplicar_asignacion, cargar_asignaciones,
+from individual_reports import (_nombre_archivo, aplicar_asignacion, cargar_asignaciones,
                                 generar_reporte_estado_leads, normalizar,
                                 normalizar_columnas_historial)
 
@@ -57,7 +61,6 @@ CLAVES_LISTA_ESTATUS = ["estatus_negocio"]
 SEPARADOR_MULTIPLE = " | "
 # Caracteres que Windows no permite en nombres de archivo.
 CARACTERES_PROHIBIDOS = set('<>:"/\\|?*')
-FORMATO_FECHA_VISTA = "%d/%m/%Y"
 
 
 # ---------------------------------------------------------------------------
@@ -107,7 +110,7 @@ def validar_historial(df):
                          "Descarga el historial de nuevo.")
 
 
-def filtrar_historial(df, estatus, rango_dictamen=None):
+def filtrar_historial(df, estatus, rango_dictamen=None):   # rango_dictamen: ya no se usa en la ventana
     """Historial completo de los leads que cumplen los filtros.
 
     estatus        : estatus de negocio elegidos (sin importar acentos ni
@@ -262,11 +265,34 @@ def cargar_historial(ruta_historial):
         return None, f"El historial guardado no se pudo usar ({e}). Descárgalo de nuevo."
 
 
-def _fecha_de_texto(valor):
-    try:
-        return date.fromisoformat(valor) if valor else None
-    except (TypeError, ValueError):
+def universo(historial, acumulados):
+    """Historial de los leads de ACUMULADOS (todos), con su ORIGEN
+    (CONTACTACION / IA). Los demás leads del historial no entran en los reportes."""
+    if historial is None or acumulados is None:
         return None
+    origen = acumulados.set_index("LEAD_ID")["ORIGEN"]
+    df = historial[historial["LEAD_ID"].isin(origen.index)].copy()
+    df["ORIGEN"] = df["LEAD_ID"].map(origen)
+    return df
+
+
+def acumulados_sin_historial(historial, acumulados):
+    """LEAD_IDs de ACUMULADOS que no están en el historial."""
+    if acumulados is None:
+        return []
+    en_historial = set(historial["LEAD_ID"]) if historial is not None else set()
+    return sorted(set(acumulados["LEAD_ID"]) - en_historial)
+
+
+def cargar_acumulados():
+    """(DataFrame, desde, hasta, aviso). Si no se puede leer: (None, hoy, hoy, motivo)."""
+    try:
+        datos = acum.leer_acumulados()
+        desde, hasta = acum.periodo(datos)
+        return datos, desde, hasta, None
+    except Exception as e:  # noqa: BLE001 - se muestra en la ventana
+        hoy = date.today()
+        return None, hoy, hoy, str(e)
 
 
 def cargar_datos():
@@ -276,10 +302,7 @@ def cargar_datos():
     secret = fn.import_json("json/secret.json")
     estatus = leer_lista_estatus(secret)
     prefs = fn.leer_preferencias()
-    hoy = date.today()
-    fecha_desde = (_fecha_de_texto(prefs.get("fecha_desde")) or fn.fecha_desde()
-                   or hoy.replace(day=1))
-    fecha_hasta = _fecha_de_texto(prefs.get("fecha_hasta")) or fn.fecha_reportes()
+    acumulados, fecha_desde, fecha_hasta, aviso_acum = cargar_acumulados()   # el periodo sale de ahí
     carpeta = prefs.get("carpeta_reportes") or None
     historial, aviso = cargar_historial(ruta_historial())   # el de CARPETA_HISTORIAL
     return {
@@ -290,6 +313,8 @@ def cargar_datos():
         "fecha_desde": fecha_desde,
         "carpeta_reportes": carpeta,
         "aviso_inicial": aviso,
+        "acumulados": acumulados,
+        "aviso_acumulados": aviso_acum,
     }
 
 
@@ -340,122 +365,6 @@ def carpeta_escribible(ruta):
 
 
 # ---------------------------------------------------------------------------
-# Calendario (tkinter puro: no necesita librerías extra, así compila sin
-# problemas con PyInstaller)
-# ---------------------------------------------------------------------------
-MESES_TITULO = [m.capitalize() for m in MESES]
-DIAS_SEMANA = ["Lu", "Ma", "Mi", "Ju", "Vi", "Sá", "Do"]
-
-
-class Calendario(tk.Toplevel):
-    """Ventanita con un mes para elegir una fecha."""
-
-    def __init__(self, ancla, fecha, al_elegir):
-        super().__init__(ancla)
-        self.withdraw()
-        self.title("Elegir fecha")
-        self.resizable(False, False)
-        self.transient(ancla.winfo_toplevel())
-        self.al_elegir = al_elegir
-        self.elegida = fecha
-        self.mes = fecha.replace(day=1)
-
-        cabecera = ttk.Frame(self, padding=(6, 6, 6, 0))
-        cabecera.pack(fill="x")
-        for texto, meses in (("«", -12), ("‹", -1)):
-            ttk.Button(cabecera, text=texto, width=3,
-                       command=lambda m=meses: self._mover(m)).pack(side="left")
-        self.titulo = ttk.Label(cabecera, anchor="center", font=("TkDefaultFont", 10, "bold"))
-        self.titulo.pack(side="left", fill="x", expand=True)
-        for texto, meses in (("»", 12), ("›", 1)):
-            ttk.Button(cabecera, text=texto, width=3,
-                       command=lambda m=meses: self._mover(m)).pack(side="right")
-
-        self.cuerpo = ttk.Frame(self, padding=6)
-        self.cuerpo.pack()
-        pie = ttk.Frame(self, padding=(6, 0, 6, 6))
-        pie.pack(fill="x")
-        ttk.Button(pie, text="Hoy", command=lambda: self._elegir(date.today())).pack(side="left")
-        ttk.Button(pie, text="Cancelar", command=self.destroy).pack(side="right")
-        self.bind("<Escape>", lambda _e: self.destroy())
-        self._dibujar()
-
-        self.update_idletasks()
-        x = ancla.winfo_rootx()
-        y = ancla.winfo_rooty() + ancla.winfo_height() + 2
-        self.geometry(f"+{x}+{y}")
-        self.deiconify()
-        self.grab_set()
-        self.focus_set()
-
-    def _mover(self, meses):
-        total = self.mes.year * 12 + self.mes.month - 1 + meses
-        self.mes = date(total // 12, total % 12 + 1, 1)
-        self._dibujar()
-
-    def _dibujar(self):
-        for hijo in self.cuerpo.winfo_children():
-            hijo.destroy()
-        self.titulo.config(text=f"{MESES_TITULO[self.mes.month - 1]} {self.mes.year}")
-        for col, dia in enumerate(DIAS_SEMANA):
-            ttk.Label(self.cuerpo, text=dia, width=4, anchor="center").grid(row=0, column=col)
-        hoy = date.today()
-        semanas = calendar.Calendar(firstweekday=0).monthdatescalendar(self.mes.year, self.mes.month)
-        for fila, semana in enumerate(semanas, start=1):
-            for col, dia in enumerate(semana):
-                boton = tk.Button(self.cuerpo, text=str(dia.day), width=3, relief="flat",
-                                  command=lambda d=dia: self._elegir(d))
-                if dia == self.elegida:
-                    boton.config(bg="#1F3864", fg="white", activebackground="#305496",
-                                 activeforeground="white")
-                elif dia.month != self.mes.month:
-                    boton.config(fg="gray60")
-                if dia == hoy:
-                    boton.config(font=("TkDefaultFont", 9, "bold underline"))
-                boton.grid(row=fila, column=col, padx=1, pady=1)
-
-    def _elegir(self, dia):
-        self.al_elegir(dia)
-        self.destroy()
-
-
-class SelectorFecha(ttk.Frame):
-    """Campo de fecha (dd/mm/aaaa) que se elige con un calendario."""
-
-    def __init__(self, master, fecha, al_cambiar=None):
-        super().__init__(master)
-        self._fecha = fecha
-        self.al_cambiar = al_cambiar
-        self._habilitado = True
-        self.texto = tk.StringVar(value=fecha.strftime(FORMATO_FECHA_VISTA))
-        self.entrada = ttk.Entry(self, textvariable=self.texto, width=11, state="readonly")
-        self.entrada.pack(side="left")
-        self.entrada.bind("<Button-1>", lambda _e: self.abrir())
-        self.boton = ttk.Button(self, text="▾", width=3, command=self.abrir)
-        self.boton.pack(side="left", padx=(2, 0))
-
-    def get(self):
-        return self._fecha
-
-    def set(self, fecha):
-        cambio = fecha != self._fecha
-        self._fecha = fecha
-        self.texto.set(fecha.strftime(FORMATO_FECHA_VISTA))
-        if cambio and self.al_cambiar:
-            self.al_cambiar()
-
-    def abrir(self):
-        if self._habilitado:
-            return Calendario(self, self._fecha, self.set)
-        return None
-
-    def habilitar(self, si):
-        self._habilitado = si
-        self.entrada.state(["!disabled", "readonly"] if si else ["disabled"])
-        self.boton.state(["!disabled"] if si else ["disabled"])
-
-
-# ---------------------------------------------------------------------------
 # Interfaz
 # ---------------------------------------------------------------------------
 class _Consola:
@@ -497,8 +406,9 @@ class _EscritorCola:
 
 class App(tk.Tk):
     def __init__(self, secret, estatus, historial, fecha, fecha_desde, carpeta_reportes=None,
-                 aviso_inicial=None):
+                 aviso_inicial=None, acumulados=None, aviso_acumulados=None):
         super().__init__()
+        self.acumulados, self.aviso_acumulados = acumulados, aviso_acumulados
         self.secret, self.estatus, self.historial = secret, estatus, historial
         self.fecha, self.fecha_desde = fecha, fecha_desde
         self.carpeta_reportes = carpeta_reportes
@@ -527,19 +437,16 @@ class App(tk.Tk):
         derecha = ttk.Frame(marco)
         derecha.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
 
-        # Periodo y carpeta de reportes
-        caja = ttk.LabelFrame(izquierda, text="Periodo y carpeta de reportes", padding=8)
+        # ACUMULADOS (define los leads y el periodo) y carpeta de reportes
+        caja = ttk.LabelFrame(izquierda, text="ACUMULADOS y carpeta de reportes", padding=8)
         caja.pack(fill="x")
-        fechas = ttk.Frame(caja)
-        fechas.pack(fill="x")
-        ttk.Label(fechas, text="Desde (FECHA_DESDE):").grid(row=0, column=0, sticky="w")
-        self.selector_desde = SelectorFecha(fechas, self.fecha_desde, self._al_cambiar_fechas)
-        self.selector_desde.grid(row=0, column=1, sticky="w", padx=(6, 0), pady=(0, 3))
-        ttk.Label(fechas, text="Hasta (FECHA_HASTA):").grid(row=1, column=0, sticky="w")
-        self.selector_hasta = SelectorFecha(fechas, self.fecha, self._al_cambiar_fechas)
-        self.selector_hasta.grid(row=1, column=1, sticky="w", padx=(6, 0))
-        self.aviso_fechas = ttk.Label(caja, foreground="red")
+        self.info_acumulados = ttk.Label(caja, wraplength=440, justify="left")
+        self.info_acumulados.pack(anchor="w")
+        self.aviso_fechas = ttk.Label(caja, foreground="red", wraplength=440, justify="left")
         self.aviso_fechas.pack(anchor="w")
+        self.boton_acumulados = ttk.Button(caja, text="Recargar ACUMULADOS",
+                                           command=self._recargar_acumulados)
+        self.boton_acumulados.pack(anchor="w", pady=(4, 0))
 
         ttk.Label(caja, text="Carpeta de reportes:").pack(anchor="w", pady=(4, 0))
         fila = ttk.Frame(caja)
@@ -592,18 +499,6 @@ class App(tk.Tk):
         ttk.Button(botones, text="Todos", command=lambda: self._marcar(True)).pack(side="left")
         ttk.Button(botones, text="Ninguno", command=lambda: self._marcar(False)).pack(side="left", padx=6)
 
-        # Qué leads usar
-        caja = ttk.LabelFrame(derecha, text="Leads a usar", padding=8)
-        caja.pack(fill="x")
-        self.solo_dictamen = tk.BooleanVar(value=False)
-        ttk.Radiobutton(caja, text="Todos los leads de historial_etapas_kommo",
-                        variable=self.solo_dictamen, value=False,
-                        command=self._actualizar_conteo).pack(anchor="w")
-        self.opcion_dictamen = ttk.Radiobutton(caja, variable=self.solo_dictamen, value=True,
-                                               command=self._actualizar_conteo)
-        self.opcion_dictamen.pack(anchor="w")
-        self._actualizar_texto_filtro()
-
         # Descripción del reporte general
         caja = ttk.Frame(derecha)
         caja.pack(fill="x", pady=(10, 0))
@@ -646,32 +541,29 @@ class App(tk.Tk):
     def _actualizar_estado(self):
         """Habilita o deshabilita los controles según lo que falte."""
         sin_carpeta = not self.carpeta_reportes
-        fechas_mal = self.selector_desde.get() > self.selector_hasta.get()
+        sin_acumulados = self.acumulados is None
         # La descarga no depende del periodo ni de la carpeta de reportes: el
         # historial va a CARPETA_HISTORIAL (configuration.json).
         puede_descargar = not self._descargando
-        puede_generar = (puede_descargar and not sin_carpeta and not fechas_mal
+        puede_generar = (puede_descargar and not sin_carpeta and not sin_acumulados
                          and self.historial is not None)
         self.boton_descargar.state(["!disabled"] if puede_descargar else ["disabled"])
         self.boton.state(["!disabled"] if puede_generar else ["disabled"])
         self.boton_carpeta.state(["disabled"] if self._descargando else ["!disabled"])
         self.boton_abrir.state(["disabled"] if (sin_carpeta or self._descargando) else ["!disabled"])
-        for selector in (self.selector_desde, self.selector_hasta):
-            selector.habilitar(not self._descargando)
-
-        self.aviso_fechas.config(
-            text="FECHA_DESDE no puede ser posterior a FECHA_HASTA." if fechas_mal else "")
+        self.boton_acumulados.state(["disabled"] if self._descargando else ["!disabled"])
+        self._actualizar_info_acumulados()
         if self.historial is None and not self._descargando:
             requisito = "Descarga el historial para poder generar reportes."
         elif sin_carpeta:
             requisito = "Elige la carpeta de reportes para poder generar reportes."
-        elif fechas_mal:
-            requisito = "Corrige el periodo para continuar."
+        elif sin_acumulados:
+            requisito = "Revisa el archivo de ACUMULADOS (RUTA_ACUMULADOS en configuration.json)."
         else:
             requisito = ""
         self.requisito.config(text=requisito)
         if self.carpeta_reportes:
-            destino = Path(self.carpeta_reportes) / nombre_carpeta_reportes(self.selector_hasta.get())
+            destino = Path(self.carpeta_reportes) / nombre_carpeta_reportes(self.fecha)
             self.destino.config(text=f"Los reportes se guardarán en: {destino}")
         else:
             self.destino.config(text="")
@@ -681,20 +573,29 @@ class App(tk.Tk):
         """Ubicación del historial (configuration.json -> CARPETA_HISTORIAL)."""
         return ruta_historial()
 
-    def _al_cambiar_fechas(self):
-        self.fecha_desde = self.selector_desde.get()
-        self.fecha = self.selector_hasta.get()
-        fn.guardar_preferencias({"fecha_desde": self.fecha_desde.isoformat(),
-                                 "fecha_hasta": self.fecha.isoformat()})
-        self._actualizar_texto_filtro()
+    def _actualizar_info_acumulados(self):
+        if self.acumulados is None:
+            self.info_acumulados.config(text=f"ACUMULADOS: {acum.ruta_acumulados() or '(sin configurar)'}")
+            self.aviso_fechas.config(text=f"No se pudo leer ACUMULADOS: {self.aviso_acumulados}")
+            return
+        origenes = self.acumulados["ORIGEN"].value_counts()
+        faltan = acumulados_sin_historial(self.historial, self.acumulados) if self.historial is not None else []
+        self.info_acumulados.config(
+            text=f"ACUMULADOS: {acum.ruta_acumulados()}\n"
+                 f"Periodo: del {self.fecha_desde:%d/%m/%Y} al {self.fecha:%d/%m/%Y} (FECHA_HASTA)\n"
+                 f"{len(self.acumulados)} leads ({origenes.get('CONTACTACION', 0)} de CONTACTACION, "
+                 f"{origenes.get('IA', 0)} de IA)")
+        self.aviso_fechas.config(
+            text=f"{len(faltan)} leads de ACUMULADOS no están en el historial (ver leads_anomalos.txt)."
+            if faltan else "")
+
+    def _recargar_acumulados(self):
+        """Vuelve a leer ACUMULADOS (p. ej. si se actualizó el archivo)."""
+        self.acumulados, self.fecha_desde, self.fecha, self.aviso_acumulados = cargar_acumulados()
         self._actualizar_nombres()
         self._actualizar_conteo()
         self._actualizar_estado()
-
-    def _actualizar_texto_filtro(self):
-        self.opcion_dictamen.config(
-            text=f"Solo leads con FECHA DICTAMEN del {self.fecha_desde:%d/%m/%Y} "
-                 f"al {self.fecha:%d/%m/%Y} (FECHA_DESDE a FECHA_HASTA)")
+        return self.acumulados is not None
 
     def _elegir_carpeta(self):
         inicial = self.carpeta_reportes or str(Path.home())
@@ -891,15 +792,15 @@ class App(tk.Tk):
     def _estatus_elegidos(self):
         return [self.lista.get(i) for i in self.lista.curselection()]
 
-    def _fecha_filtro(self):
-        """(FECHA_DESDE, FECHA_HASTA) si se eligió filtrar por FECHA DICTAMEN; si no, None."""
-        return (self.fecha_desde, self.fecha) if self.solo_dictamen.get() else None
+    def _leads_a_usar(self, estatus):
+        """Leads de ACUMULADOS con los estatus elegidos."""
+        return filtrar_historial(universo(self.historial, self.acumulados), estatus)
 
     def _actualizar_conteo(self):
-        if self.historial is None:
+        if self.historial is None or self.acumulados is None:
             self.conteo.config(text="Leads que cumplen los filtros: —")
             return
-        df = filtrar_historial(self.historial, self._estatus_elegidos(), self._fecha_filtro())
+        df = self._leads_a_usar(self._estatus_elegidos())
         self.conteo.config(text=f"Leads que cumplen los filtros: {df['LEAD_ID'].nunique()}")
 
     def _actualizar_nombres(self):
@@ -924,8 +825,8 @@ class App(tk.Tk):
         if self.historial is None:
             messagebox.showwarning("Sin historial", "Descarga primero el historial.")
             return
-        if self.fecha_desde > self.fecha:
-            messagebox.showwarning("Periodo inválido", "FECHA_DESDE no puede ser posterior a FECHA_HASTA.")
+        if not self._recargar_acumulados():          # siempre con la versión más reciente del archivo
+            messagebox.showerror("ACUMULADOS", f"No se pudo leer ACUMULADOS:\n{self.aviso_acumulados}")
             return
         estatus = self._estatus_elegidos()
         if not estatus:
@@ -936,7 +837,13 @@ class App(tk.Tk):
         self.mensajes.delete("1.0", "end")
         try:
             with contextlib.redirect_stdout(_Consola(self)):
-                df = filtrar_historial(self.historial, estatus, self._fecha_filtro())
+                df = self._leads_a_usar(estatus)
+                print(f"ACUMULADOS: {len(self.acumulados)} leads, del {self.fecha_desde:%d/%m/%Y} "
+                      f"al {self.fecha:%d/%m/%Y}")
+                faltan = acumulados_sin_historial(self.historial, self.acumulados)
+                if faltan:
+                    print(f"Aviso: {len(faltan)} leads de ACUMULADOS no están en el historial: "
+                          f"{', '.join(map(str, faltan))}")
                 print(f"Estatus: {', '.join(estatus)}")
                 print(f"Leads seleccionados: {df['LEAD_ID'].nunique()}\n")
                 ruta = generar_reportes(df, self.secret, self.fecha, self.descripcion.get().strip(),
