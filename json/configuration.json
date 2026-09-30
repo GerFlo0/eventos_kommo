@@ -1,9 +1,9 @@
 {
     "settings": {
-        "FECHA_DESDE": null,
-        "FECHA_HASTA": null,
+        "FECHA_DESDE": "01/09/2026",
+        "FECHA_HASTA": "29/09/2026",
         "CARPETA_HISTORIAL": "tablas",
-        "RUTA_ACUMULADOS": "ACUMULADOS.xlsx",
+        "RUTA_ACUMULADOS": "tablas/ACUMULADOS.xlsx",
         "performance": {
             "VERBOSE": false,
             "THREADS": 4
@@ -12,5 +12,84 @@
     "acumulados": {
         "SOLICITUD DE INFORMES 07": "https://rozherseguros-my.sharepoint.com/:x:/p/heriberto_castillo/IQBauyywDVmLSJldJO5ztbgvAfmGqUMv-p8ByNGE5-zooVQ?e=TBvZZ1",
         "SOLICITUD IA PRUEBA": "https://rozherseguros-my.sharepoint.com/:x:/p/heriberto_castillo/IQB4itr21zzLTLbbJc5yaKebAdFfBHeVWtc-Xcyiz_Tk36w?e=hIKzAQ"
-    }
+    },
+    "fuentes": [
+        {
+            "HOJA_DESTINO": "ACUMULADO CONTACTACION",
+            "ARCHIVO": "tablas/SOLICITUD DE INFORMES 07.xlsx",
+            "HOJA_ORIGEN": "Sheet1",
+            "COLUMNA_ESTATUS": "ESTATUS",
+            "ESTATUS_INCLUIDOS": [
+                "COMPRA MAYOR",
+                "COMPRA MENOR",
+                "NUEVO MAYOR",
+                "NUEVO MENOR",
+                "RESTRINGIDA"
+            ],
+            "COLUMNA_LEAD": "LEAD",
+            "LEADS_EXCLUIDOS": [
+                "1",
+                "2"
+            ],
+            "COLUMNA_FECHA": "FECHA",
+            "COLUMNAS_SALIDA": [
+                "FECHA",
+                "FECHA KOMMO",
+                "Asesor",
+                "NOMBRE CLIENTE",
+                "NSS",
+                "CURP",
+                "LEAD",
+                "TELEFONO",
+                "ESTATUS",
+                "INFORMEDEPAGO",
+                "DESCUENTOS",
+                "$0.30",
+                "CAPACIDAD",
+                "VENCIMIENTO",
+                "FINANCIERA",
+                "Monto compra",
+                "Asignado",
+                "Fecha asignacion"
+            ]
+        },
+        {
+            "HOJA_DESTINO": "ACUMULADO IA",
+            "ARCHIVO": "tablas/SOLICITUD IA PRUEBA.xlsx",
+            "HOJA_ORIGEN": "Hoja1",
+            "COLUMNA_ESTATUS": "ESTATUS",
+            "ESTATUS_INCLUIDOS": [
+                "COMPRA MAYOR",
+                "COMPRA MENOR",
+                "NUEVO MAYOR",
+                "NUEVO MENOR",
+                "RESTRINGIDA"
+            ],
+            "COLUMNA_LEAD": null,
+            "LEADS_EXCLUIDOS": [],
+            "COLUMNA_FECHA": "FECHA ASIG",
+            "COLUMNAS_SALIDA": [
+                "ID Lead",
+                "fecha",
+                "Hora",
+                "Nombre",
+                "Telefono",
+                "telefono2",
+                "CURP",
+                "NSS",
+                "Fecha_de_nac",
+                "Estado_de_nac",
+                "ESTATUS",
+                "INFORMEDEPAGO",
+                "DESCUENTOS",
+                "$0.30",
+                "CAPACIDAD",
+                "VENCIMIENTO",
+                "FINANCIERA",
+                "MONTO COMPRA",
+                "ASIGNADO A",
+                "FECHA ASIG"
+            ]
+        }
+    ]
 }

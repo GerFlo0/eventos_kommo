@@ -203,11 +203,13 @@ def _fecha_de_configuracion(clave):
     valor = import_json(RUTA_CONFIGURACION)["settings"].get(clave)
     if not valor:
         return None
-    try:
-        return datetime.strptime(valor, "%Y-%m-%d").date()
-    except ValueError:
-        raise ValueError(f"{clave} en configuration.json debe tener formato "
-                         f"AAAA-MM-DD (valor actual: {valor!r})") from None
+    for formato in ("%Y-%m-%d", "%d/%m/%Y"):
+        try:
+            return datetime.strptime(valor, formato).date()
+        except ValueError:
+            pass
+    raise ValueError(f"{clave} en configuration.json debe tener formato "
+                     f"AAAA-MM-DD o DD/MM/AAAA (valor actual: {valor!r})")
 
 def fecha_reportes() -> date:
     """Fecha con la que se nombran las carpetas y archivos de los reportes.

@@ -22,7 +22,7 @@ from openpyxl.utils import get_column_letter
 
 from lectura import Celda, ErrorLectura, Tabla, leer_tabla, normalizar, serial_a_fecha
 
-CONFIG_POR_DEFECTO = Path(__file__).resolve().parent / "configuration.json"
+CONFIG_POR_DEFECTO = Path(__file__).resolve().parent / "json" / "configuration.json"
 FORMATOS_FECHA_TEXTO = ("%d/%m/%Y", "%Y-%m-%d", "%d/%m/%Y %H:%M", "%d/%m/%Y %H:%M:%S", "%Y-%m-%d %H:%M:%S")
 MAX_EJEMPLOS_FILAS = 10
 
@@ -62,7 +62,7 @@ def cargar_configuracion(ruta: Path) -> dict:
             "Si usas rutas de Windows, escribe las diagonales dobles (C:\\\\...) o usa / (C:/...)."
         ) from e
 
-    fuentes = config.get("FUENTES")
+    fuentes = config.get("fuentes") or config.get("FUENTES")
     if not fuentes:
         raise ErrorConfiguracion("configuration.json no tiene FUENTES definidas.")
     for i, fuente in enumerate(fuentes, start=1):
@@ -194,23 +194,25 @@ def escribir_hoja(ws, tabla: Tabla, columnas_salida: list[str], filas: list[list
 
 def ejecutar(ruta_config: Path, desde_cli: str | None, hasta_cli: str | None):
     config = cargar_configuracion(ruta_config)
-    base = ruta_config.parent
+    settings = config.get("settings") or {}
+    fuentes = config.get("fuentes") or config["FUENTES"]
+    base = ruta_config.parent.parent if ruta_config.parent.name == "json" else ruta_config.parent
 
-    desde = parsear_fecha(desde_cli or config.get("FECHA_DESDE"), "FECHA_DESDE")
-    hasta = parsear_fecha(hasta_cli or config.get("FECHA_HASTA"), "FECHA_HASTA")
+    desde = parsear_fecha(desde_cli or settings.get("FECHA_DESDE") or config.get("FECHA_DESDE"), "FECHA_DESDE")
+    hasta = parsear_fecha(hasta_cli or settings.get("FECHA_HASTA") or config.get("FECHA_HASTA"), "FECHA_HASTA")
     if desde is None:
         raise ErrorConfiguracion("Indica FECHA_DESDE en configuration.json o con --desde DD/MM/AAAA.")
     if hasta is not None and hasta < desde:
         raise ErrorConfiguracion(f"FECHA_HASTA ({hasta:%d/%m/%Y}) es anterior a FECHA_DESDE ({desde:%d/%m/%Y}).")
 
-    salida = resolver_ruta(config.get("ARCHIVO_SALIDA") or "ACUMULADOS.xlsx", base)
+    salida = resolver_ruta(settings.get("RUTA_ACUMULADOS") or config.get("ARCHIVO_SALIDA") or "ACUMULADOS.xlsx", base)
 
     rango = f"desde {desde:%d/%m/%Y}" + (f" hasta {hasta:%d/%m/%Y}" if hasta else " (sin fecha límite)")
     print(f"Generando acumulados {rango}")
 
     libro = Workbook()
     libro.remove(libro.active)
-    for fuente in config["FUENTES"]:
+    for fuente in fuentes:
         destino = fuente["HOJA_DESTINO"]
         archivo = resolver_ruta(fuente["ARCHIVO"], base)
         print(f'- Leyendo "{archivo.name}" / "{fuente["HOJA_ORIGEN"]}" para "{destino}"...')

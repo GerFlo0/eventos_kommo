@@ -5,7 +5,7 @@ from pathlib import Path
 config = fn.import_json("json/configuration.json")
 
 archivos = config["acumulados"]
-carpeta_destino = fn.PROJECT_ROOT / "acumulados"
+carpeta_destino = fn.PROJECT_ROOT / "tablas"
 carpeta_destino.mkdir(parents=True, exist_ok=True)
 
 for nombre, url in archivos.items():
