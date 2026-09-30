@@ -70,6 +70,8 @@ def main():
         "--specpath", str(RAIZ / "build"),
         # Se importa dentro de una función de app.py; se declara por si acaso.
         "--hidden-import", "extract_data_from_kommo",
+        "--hidden-import", "descargar_base_acumulados",
+        "--hidden-import", "generar_acumulados",
     ]
     for dato in DATOS:
         opciones += ["--add-data", f"{RAIZ / dato}{os.pathsep}{Path(dato).parent}"]

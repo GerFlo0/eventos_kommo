@@ -4,6 +4,12 @@ Cada fuente produce una hoja del archivo de salida, aplicando en orden: filtro d
 exclusión de LEAD (opcional) y rango de fechas (inclusivo) sobre COLUMNA_FECHA. Las filas
 se ordenan por esa misma fecha, conservando el orden del archivo base dentro de cada día.
 
+Cada fuente toma su archivo base por nombre ("BASE"): el que descarga
+descargar_base_acumulados.py en CARPETA_BASE_ACUMULADOS. La salida va a
+RUTA_ACUMULADOS, y junto a ella se anota el periodo usado (ACUMULADOS.info.json),
+que es el que usan los reportes. Las rutas relativas se toman dentro de la
+carpeta de datos del programa.
+
 Uso:
     python generar_acumulados.py
     python generar_acumulados.py --desde 01/09/2026 --hasta 28/09/2026
@@ -20,6 +26,9 @@ from openpyxl import Workbook
 from openpyxl.styles import Font
 from openpyxl.utils import get_column_letter
 
+import acumulados as acum
+import functions as fn
+from descargar_base_acumulados import ruta_base
 from lectura import Celda, ErrorLectura, Tabla, leer_tabla, normalizar, serial_a_fecha
 
 CONFIG_POR_DEFECTO = Path(__file__).resolve().parent / "json" / "configuration.json"
@@ -27,7 +36,7 @@ FORMATOS_FECHA_TEXTO = ("%d/%m/%Y", "%Y-%m-%d", "%d/%m/%Y %H:%M", "%d/%m/%Y %H:%
 MAX_EJEMPLOS_FILAS = 10
 
 FUENTE_CAMPOS_REQUERIDOS = (
-    "HOJA_DESTINO", "ARCHIVO", "HOJA_ORIGEN", "COLUMNA_FECHA",
+    "HOJA_DESTINO", "HOJA_ORIGEN", "COLUMNA_FECHA",
     "COLUMNA_ESTATUS", "ESTATUS_INCLUIDOS", "COLUMNAS_SALIDA",
 )
 
@@ -67,6 +76,8 @@ def cargar_configuracion(ruta: Path) -> dict:
         raise ErrorConfiguracion("configuration.json no tiene FUENTES definidas.")
     for i, fuente in enumerate(fuentes, start=1):
         faltantes = [c for c in FUENTE_CAMPOS_REQUERIDOS if not fuente.get(c)]
+        if not (fuente.get("BASE") or fuente.get("ARCHIVO")):
+            faltantes.append("BASE")
         if faltantes:
             raise ErrorConfiguracion(f"La fuente #{i} no tiene: {', '.join(faltantes)}")
     return config
@@ -119,7 +130,10 @@ def filtrar(tabla: Tabla, fuente: dict, desde: date, hasta: date | None) -> list
     i_estatus = indice_columna(tabla, fuente["COLUMNA_ESTATUS"], origen)
     i_fecha = indice_columna(tabla, fuente["COLUMNA_FECHA"], origen)
     i_lead = indice_columna(tabla, fuente["COLUMNA_LEAD"], origen) if fuente.get("COLUMNA_LEAD") else None
-
+    # Opcional: columna que se usa cuando COLUMNA_FECHA está vacía (p. ej. "fecha"
+    # cuando el lead todavía no tiene "FECHA ASIG"), como hace Cloud.
+    i_respaldo = (indice_columna(tabla, fuente["COLUMNA_FECHA_RESPALDO"], origen)
+                    if fuente.get("COLUMNA_FECHA_RESPALDO") else None)
     estatus_incluidos = {normalizar(e) for e in fuente["ESTATUS_INCLUIDOS"]}
     leads_excluidos = {normalizar_lead(l) for l in fuente.get("LEADS_EXCLUIDOS") or []}
 
@@ -133,9 +147,13 @@ def filtrar(tabla: Tabla, fuente: dict, desde: date, hasta: date | None) -> list
         filas = [(n, c) for n, c in filas if normalizar_lead(c[i_lead].valor) not in leads_excluidos]
         resumen.append(f"{len(filas)} por lead")
 
-    seleccionadas, sin_fecha = [], []
+    seleccionadas, sin_fecha, con_respaldo = [], [], []
     for numero, celdas in filas:
         fecha = valor_a_fecha(celdas[i_fecha].valor)
+        if fecha is None and i_respaldo is not None:
+            fecha = valor_a_fecha(celdas[i_respaldo].valor)
+            if fecha is not None:
+                con_respaldo.append(numero)
         if fecha is None:
             sin_fecha.append(numero)
         elif fecha >= desde and (hasta is None or fecha <= hasta):
@@ -143,6 +161,11 @@ def filtrar(tabla: Tabla, fuente: dict, desde: date, hasta: date | None) -> list
     resumen.append(f"{len(seleccionadas)} por fecha")
 
     print(f"  [{hoja}] filas: " + " -> ".join(resumen))
+    if con_respaldo:
+        ejemplos = ", ".join(map(str, con_respaldo[:MAX_EJEMPLOS_FILAS]))
+        extra = "..." if len(con_respaldo) > MAX_EJEMPLOS_FILAS else ""
+        print(f'  [{hoja}] {len(con_respaldo)} filas sin "{fuente["COLUMNA_FECHA"]}" se filtraron por '
+            f'"{fuente["COLUMNA_FECHA_RESPALDO"]}" (filas {ejemplos}{extra} del archivo base).')
     if sin_fecha:
         ejemplos = ", ".join(map(str, sin_fecha[:MAX_EJEMPLOS_FILAS]))
         extra = "..." if len(sin_fecha) > MAX_EJEMPLOS_FILAS else ""
@@ -192,11 +215,24 @@ def escribir_hoja(ws, tabla: Tabla, columnas_salida: list[str], filas: list[list
 
 # ---------------------------------------------------------------------------
 
-def ejecutar(ruta_config: Path, desde_cli: str | None, hasta_cli: str | None):
+def archivo_de_fuente(fuente: dict, base: Path) -> Path:
+    """Archivo base de una fuente: por nombre ("BASE") o por ruta ("ARCHIVO")."""
+    if fuente.get("BASE"):
+        return ruta_base(fuente["BASE"])
+    return resolver_ruta(fuente["ARCHIVO"], base)
+
+
+def generar(desde: date, hasta: date, ruta_config: Path | None = None) -> Path:
+    """Para app.py: genera ACUMULADOS con ese periodo. Devuelve la ruta."""
+    return ejecutar((ruta_config or CONFIG_POR_DEFECTO).resolve(),
+                    f"{desde:%d/%m/%Y}", f"{hasta:%d/%m/%Y}")
+
+
+def ejecutar(ruta_config: Path, desde_cli: str | None, hasta_cli: str | None) -> Path:
     config = cargar_configuracion(ruta_config)
     settings = config.get("settings") or {}
     fuentes = config.get("fuentes") or config["FUENTES"]
-    base = ruta_config.parent.parent if ruta_config.parent.name == "json" else ruta_config.parent
+    base = fn.carpeta_datos()          # rutas relativas: en la carpeta de datos del programa
 
     desde = parsear_fecha(desde_cli or settings.get("FECHA_DESDE") or config.get("FECHA_DESDE"), "FECHA_DESDE")
     hasta = parsear_fecha(hasta_cli or settings.get("FECHA_HASTA") or config.get("FECHA_HASTA"), "FECHA_HASTA")
@@ -205,7 +241,8 @@ def ejecutar(ruta_config: Path, desde_cli: str | None, hasta_cli: str | None):
     if hasta is not None and hasta < desde:
         raise ErrorConfiguracion(f"FECHA_HASTA ({hasta:%d/%m/%Y}) es anterior a FECHA_DESDE ({desde:%d/%m/%Y}).")
 
-    salida = resolver_ruta(settings.get("RUTA_ACUMULADOS") or config.get("ARCHIVO_SALIDA") or "ACUMULADOS.xlsx", base)
+    salida = resolver_ruta(settings.get("RUTA_ACUMULADOS") or config.get("ARCHIVO_SALIDA")
+                           or "ACUMULADOS.xlsx", base)
 
     rango = f"desde {desde:%d/%m/%Y}" + (f" hasta {hasta:%d/%m/%Y}" if hasta else " (sin fecha límite)")
     print(f"Generando acumulados {rango}")
@@ -214,7 +251,7 @@ def ejecutar(ruta_config: Path, desde_cli: str | None, hasta_cli: str | None):
     libro.remove(libro.active)
     for fuente in fuentes:
         destino = fuente["HOJA_DESTINO"]
-        archivo = resolver_ruta(fuente["ARCHIVO"], base)
+        archivo = archivo_de_fuente(fuente, base)
         print(f'- Leyendo "{archivo.name}" / "{fuente["HOJA_ORIGEN"]}" para "{destino}"...')
         try:
             tabla = leer_tabla(archivo, fuente["HOJA_ORIGEN"])
@@ -229,7 +266,9 @@ def ejecutar(ruta_config: Path, desde_cli: str | None, hasta_cli: str | None):
         libro.save(salida)
     except PermissionError as e:
         raise ErrorConfiguracion(f"No se pudo guardar {salida}. ¿Está abierto en Excel? Ciérralo e intenta de nuevo.") from e
+    acum.guardar_info(salida, desde, hasta or date.today())
     print(f"Listo: {salida}")
+    return salida
 
 
 def main():

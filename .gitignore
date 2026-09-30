@@ -23,3 +23,6 @@ resultado.txt
 comparar_datos.xlsx
 
 *.xlsx#
+
+# Preferencias locales de app.py (carpeta de reportes y fechas elegidas)
+preferencias.json

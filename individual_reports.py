@@ -655,7 +655,7 @@ def main():
     ruta = fn.ruta_historial()                      # configuration.json -> CARPETA_HISTORIAL
     df = normalizar_columnas_historial(fn.import_xlsx(ruta))
     historial = aplicar_asignacion(filtrar_por_etiqueta(df, asesor), asesor,
-                                   cargar_asignaciones(ruta.parent))
+                                   cargar_asignaciones(fn.carpeta_anomalos()))
     generar_reporte_estado_leads(historial, asesor=asesor)
 
 

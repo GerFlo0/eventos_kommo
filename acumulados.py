@@ -10,7 +10,10 @@ espacios de más), no por su letra, por si alguien inserta una columna.
 El periodo de los reportes sale de las fechas del archivo: la más antigua es
 FECHA_DESDE y la más reciente FECHA_HASTA.
 """
+import json
+import os
 import unicodedata
+from datetime import date, datetime
 from pathlib import Path
 
 import pandas as pd
@@ -84,3 +87,33 @@ def periodo(acumulados):
     if fechas.empty:
         raise ValueError("ACUMULADOS no tiene fechas válidas.")
     return fechas.min().date(), fechas.max().date()
+
+
+# ---- Fechas con las que se generó ACUMULADOS (las usan los reportes) --------
+def ruta_info(ruta_acumulados):
+    ruta = Path(ruta_acumulados)
+    return ruta.with_name(f"{ruta.stem}.info.json")
+
+
+def guardar_info(ruta_acumulados, desde, hasta):
+    """Anota junto a ACUMULADOS con qué periodo se generó."""
+    info = {"generado": datetime.now().isoformat(timespec="seconds"),
+            "fecha_desde": desde.isoformat(), "fecha_hasta": hasta.isoformat(),
+            "marca_archivo": os.path.getmtime(ruta_acumulados)}
+    ruta_info(ruta_acumulados).write_text(json.dumps(info, indent=2), encoding="utf-8")
+    return info
+
+
+def leer_info(ruta_acumulados):
+    """{"generado", "fecha_desde", "fecha_hasta"} o None si no hay info o si el
+    archivo se reemplazó por otro medio (ya no corresponde)."""
+    ruta = Path(ruta_acumulados)
+    try:
+        info = json.loads(ruta_info(ruta).read_text(encoding="utf-8"))
+        if abs(float(info["marca_archivo"]) - os.path.getmtime(ruta)) > 1:
+            return None
+        return {"generado": datetime.fromisoformat(info["generado"]),
+                "fecha_desde": date.fromisoformat(info["fecha_desde"]),
+                "fecha_hasta": date.fromisoformat(info["fecha_hasta"])}
+    except (OSError, ValueError, KeyError, TypeError):
+        return None

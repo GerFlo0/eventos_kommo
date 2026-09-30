@@ -34,8 +34,7 @@ REQUIREMENTS_FILE = "requirements.txt"
 # Carpetas a crear (rutas relativas a la raíz del proyecto).
 # Se admiten subcarpetas, p. ej. "data/raw".
 REQUIRED_FOLDERS = [
-    "tablas/reportes/individuales",
-    "tablas/reportes/generales"
+    "tablas"
 ]
 
 REQUIRED_FILES = [
@@ -71,7 +70,6 @@ REQUIRED_FILES_CONTENT = {
             "ITZELH GONZALEZ CIERRES",
             "JAEL RUIZ CIERRES",
             "KARINA MATA CIERRES",
-            "KATE MALPICA CIERRES",
             "LIDIA GARZA CIERRES",
             "LUZ BANDA CIERRES",
             "MAGALI HERNANDEZ CIERRES",
@@ -90,7 +88,11 @@ REQUIRED_FILES_CONTENT = {
         "CREDITO NUEVO MAYOR  A 40K"
     ],
     "campos_tarjeta": ["ESTATUS DE NEGOCIO", "FECHA DICTAMEN", "MONTO OTORGADO", "MOTIVO LEAD PERDIDO"],
-    "campos_dinero": ["MONTO OTORGADO"]
+    "campos_dinero": ["MONTO OTORGADO"],
+    "sharepoint": {
+        "SOLICITUD DE INFORMES 07": "enlace_de_sharepoint",
+        "SOLICITUD IA PRUEBA": "enlace_de_sharepoint"
+    }
 }
 
 """

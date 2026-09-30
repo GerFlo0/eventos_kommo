@@ -2,21 +2,19 @@
     "settings": {
         "FECHA_DESDE": "01/09/2026",
         "FECHA_HASTA": "29/09/2026",
-        "CARPETA_HISTORIAL": "tablas",
+        "CARPETA_BASE_ACUMULADOS": "tablas/base_acumulados",
         "RUTA_ACUMULADOS": "tablas/ACUMULADOS.xlsx",
+        "CARPETA_HISTORIAL": "tablas",
+        "CARPETA_ANOMALOS": "tablas",
         "performance": {
             "VERBOSE": false,
             "THREADS": 4
         }
     },
-    "acumulados": {
-        "SOLICITUD DE INFORMES 07": "https://rozherseguros-my.sharepoint.com/:x:/p/heriberto_castillo/IQBauyywDVmLSJldJO5ztbgvAfmGqUMv-p8ByNGE5-zooVQ?e=TBvZZ1",
-        "SOLICITUD IA PRUEBA": "https://rozherseguros-my.sharepoint.com/:x:/p/heriberto_castillo/IQB4itr21zzLTLbbJc5yaKebAdFfBHeVWtc-Xcyiz_Tk36w?e=hIKzAQ"
-    },
     "fuentes": [
         {
             "HOJA_DESTINO": "ACUMULADO CONTACTACION",
-            "ARCHIVO": "tablas/SOLICITUD DE INFORMES 07.xlsx",
+            "BASE": "SOLICITUD DE INFORMES 07",
             "HOJA_ORIGEN": "Sheet1",
             "COLUMNA_ESTATUS": "ESTATUS",
             "ESTATUS_INCLUIDOS": [
@@ -55,7 +53,7 @@
         },
         {
             "HOJA_DESTINO": "ACUMULADO IA",
-            "ARCHIVO": "tablas/SOLICITUD IA PRUEBA.xlsx",
+            "BASE": "SOLICITUD IA PRUEBA",
             "HOJA_ORIGEN": "Hoja1",
             "COLUMNA_ESTATUS": "ESTATUS",
             "ESTATUS_INCLUIDOS": [
@@ -68,6 +66,7 @@
             "COLUMNA_LEAD": null,
             "LEADS_EXCLUIDOS": [],
             "COLUMNA_FECHA": "FECHA ASIG",
+            "COLUMNA_FECHA_RESPALDO": "fecha",
             "COLUMNAS_SALIDA": [
                 "ID Lead",
                 "fecha",

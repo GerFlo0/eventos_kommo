@@ -1,10 +1,10 @@
 """
-Historial de etapas de Kommo (leads de los asesores de cierres)
-===============================================================
+Historial de etapas de Kommo (leads de ACUMULADOS)
+==================================================
 
-Descarga de Kommo el historial completo de etapas de los leads que HOY tienen
-en sus etiquetas a alguno de los asesores de secret.json -> asesores, y genera
-un Excel con:
+Descarga de Kommo el historial completo de etapas de TODOS y ÚNICAMENTE los
+leads del archivo ACUMULADOS (configuration.json -> RUTA_ACUMULADOS, que genera
+generar_acumulados.py), y genera un Excel con:
 
   - Hoja "HISTORIAL": un renglón por movimiento (la creación del lead y cada
     cambio de etapa o de embudo), con las columnas
@@ -17,25 +17,28 @@ un Excel con:
     CAMBIOS DE EMBUDO.
 
 Qué se descarga (sin límite de fechas):
-  1. Leads de los embudos de secret.json -> kommo -> PIPELINE_ID (cualquier
-     etapa) que tienen al menos una etiqueta que contiene el nombre de un
-     asesor de secret.json -> asesores (sin importar mayúsculas ni acentos).
-  2. Todos sus cambios de etapa dentro de esos embudos, y sus entradas y
-     salidas hacia otros embudos (los movimientos enteramente en otros
-     embudos no se guardan). La creación del lead es el primer renglón.
-  3. Los campos de su tarjeta de secret.json -> campos_tarjeta (vacíos si no
-     tienen dato). Los de campos_dinero van con formato de dinero.
+  1. La tarjeta de cada lead de ACUMULADOS (se guardan todos, aunque tengan
+     datos incompletos): campos de secret.json -> campos_tarjeta (vacíos si no
+     tienen dato; los de campos_dinero van con formato de dinero), etiquetas,
+     fecha de creación y buzón.
+  2. Todos sus movimientos, en cualquier embudo. Los embudos de
+     secret.json -> kommo -> PIPELINE_ID se muestran con su clave (VENTAS,
+     CIERRES); los demás, con su nombre en Kommo. La creación es el primer renglón.
 
-Además genera, junto al historial, el reporte de leads anómalos:
-  - leads_anomalos.txt  (para leerlo) y leads_anomalos.json (lo usan los
+Los reportes solo usan los leads completos (con FECHA DICTAMEN, ESTATUS DE
+NEGOCIO y etiqueta de un asesor de secret.json -> asesores).
+
+Además genera el reporte de leads anómalos en CARPETA_ANOMALOS:
+  - leads_anomalos.txt (para leerlo) y leads_anomalos.json (lo usan los
     reportes para asignar los leads con más de un asesor):
       * más de un asesor en sus etiquetas, con la fecha de cada etiqueta y el
         asesor asignado: el que corresponde a su BUZÓN si es uno de ellos; si
         no, el de la etiqueta más reciente; en empate, ninguno (cuenta para
         todos),
       * con FECHA DICTAMEN pero sin ESTATUS DE NEGOCIO,
-      * en ACUMULADOS (configuration.json -> RUTA_ACUMULADOS) pero no en el
-        historial
+      * incompletos (no se usan en los reportes): sin FECHA DICTAMEN, sin
+        ESTATUS DE NEGOCIO o sin etiqueta de un asesor,
+      * leads de ACUMULADOS no encontrados en Kommo.
 
 Uso:
     python extract_data_from_kommo.py      # guarda en CARPETA_HISTORIAL
@@ -44,8 +47,8 @@ Uso:
     El token se toma de la variable de entorno KOMMO_TOKEN si existe; si no,
     de secret.json -> kommo -> TOKEN.
 
-configuration.json -> settings (solo configuración y rendimiento):
-    CARPETA_HISTORIAL  carpeta donde se guarda el historial.
+configuration.json -> settings:
+    RUTA_ACUMULADOS, CARPETA_HISTORIAL, CARPETA_ANOMALOS  rutas de los archivos.
     performance        THREADS (descargas en paralelo), VERBOSE (detalle).
 """
 import json
@@ -448,30 +451,24 @@ def _tarjeta(lead):
             "pipeline_id": lead.get("pipeline_id"), "status_id": lead.get("status_id")}
 
 
-def identificar_leads(etapas, embudos):
-    """Paso 1: leads de los embudos (en cualquier etapa, sin límite de fechas)
-    con al menos una etiqueta de un asesor. Devuelve {LEAD_ID: tarjeta}."""
-    pares = sorted(clave for clave in etapas
-                   if isinstance(clave, tuple) and clave[0] in embudos)
-    tandas = [pares[i:i + 10] for i in range(0, len(pares), 10)]
+def cargar_leads(lead_ids, avance=(0.03, 0.25)):
+    """Tarjetas de esos leads (los de ACUMULADOS), de 50 en 50 por ID.
+    Devuelve ({LEAD_ID: tarjeta}, [LEAD_IDs que Kommo no devolvió])."""
+    ids = sorted(lead_ids)
+    tandas = [ids[i:i + 50] for i in range(0, len(ids), 50)]
 
     def bajar(tanda):
-        params = {"limit": 250}
-        for i, (pid, sid) in enumerate(tanda):
-            params[f"filter[statuses][{i}][pipeline_id]"] = pid
-            params[f"filter[statuses][{i}][status_id]"] = sid
-        return _paginar(f"{BASE}/leads", params, "leads")
+        return _paginar(f"{BASE}/leads", {"filter[id][]": tanda, "limit": 250}, "leads")
 
-    leads = {}
+    tarjetas = {}
     with ThreadPoolExecutor(max_workers=HILOS) as ex:
         for hechos, lote in enumerate(ex.map(bajar, tandas), start=1):
             for lead in lote:
-                leads[lead["id"]] = lead
-            _avisar(0.03 + 0.22 * hechos / len(tandas),
-                    f"Buscando leads de los asesores... {len(leads)} revisados")
-    tarjetas = {lid: _tarjeta(lead) for lid, lead in leads.items()}
-    log(f"  {len(leads)} leads en los embudos")
-    return {lid: t for lid, t in tarjetas.items() if t["asesores"]}
+                tarjetas[lead["id"]] = _tarjeta(lead)
+            inicio, fin = avance
+            _avisar(inicio + (fin - inicio) * hechos / len(tandas),
+                    f"Leyendo tarjetas de los leads... {len(tarjetas)}/{len(ids)}")
+    return tarjetas, sorted(set(ids) - set(tarjetas))
 
 
 def cargar_usuarios():
@@ -548,8 +545,9 @@ def _fila(lead_id, pid_ant, sid_ant, pid_new, sid_new, fecha, tipo, orden_evento
 
 
 def armar_filas(eventos, tarjetas, etapas, embudos, nombres_embudo):
-    """Creación del lead + cambios de etapa/embudo que tocan los embudos
-    configurados (dentro de ellos, o entrando/saliendo de ellos)."""
+    """Creación del lead + todos sus cambios de etapa y de embudo, en cualquier
+    embudo (los leads ya vienen de ACUMULADOS). Los embudos de secret.json se
+    muestran con su clave (VENTAS, CIERRES); los demás, con su nombre en Kommo."""
     por_lead = {}
     for ev in eventos:
         if ev.get("entity_id") in tarjetas:
@@ -570,15 +568,13 @@ def armar_filas(eventos, tarjetas, etapas, embudos, nombres_embudo):
         else:
             sid0, pid0 = tarjeta["status_id"], tarjeta["pipeline_id"]
         creacion = tarjeta["creacion"] or (_fecha(alta["created_at"]) if alta else None)
-        if creacion and pid0 in embudos:
+        if creacion:
             filas.append(_fila(lid, None, None, pid0, sid0, creacion, "lead_added", 0,
                                etapas, embudos, nombres_embudo))
 
         for n, ev in enumerate(cambios, start=1):
             sid_ant, pid_ant = extraer_status(ev.get("value_before"))
             sid_new, pid_new = extraer_status(ev.get("value_after"))
-            if pid_new not in embudos and pid_ant not in embudos:
-                continue      # movimiento enteramente en otros embudos
             filas.append(_fila(lid, pid_ant, sid_ant, pid_new, sid_new, _fecha(ev["created_at"]),
                                "lead_status_changed", n, etapas, embudos, nombres_embudo))
     return filas
@@ -633,15 +629,20 @@ def revisar_anomalias(tarjetas):
     return {"varias_asesores": varias, "dictamen_sin_estatus": con_dictamen}
 
 
-def acumulados_sin_historial(tarjetas):
-    """LEAD_IDs de ACUMULADOS que no quedaron en el historial. Si ACUMULADOS no
-    está configurado o no se puede leer, se avisa y no se revisa."""
-    try:
-        ids = set(acum.leer_acumulados()["LEAD_ID"])
-    except (OSError, ValueError) as e:
-        print(f"Aviso: no se revisó ACUMULADOS ({e})")
-        return []
-    return sorted(ids - set(tarjetas))
+def incompletos(tarjetas):
+    """Leads que se guardan pero NO se usan en los reportes, por motivo (un
+    lead puede tener varios): sin FECHA DICTAMEN, sin ESTATUS DE NEGOCIO, o
+    sin etiqueta de un asesor de secret.json."""
+    grupos = {"sin_fecha_dictamen": [], "sin_estatus": [], "sin_asesor": []}
+    for lid in sorted(tarjetas):
+        t = tarjetas[lid]
+        if _vacio(t["campos"].get(CAMPO_DICTAMEN)):
+            grupos["sin_fecha_dictamen"].append(lid)
+        if _vacio(t["campos"].get(CAMPO_ESTATUS)):
+            grupos["sin_estatus"].append(lid)
+        if not t["asesores"]:
+            grupos["sin_asesor"].append(lid)
+    return grupos
 
 
 def fechar_asesores(varias, tarjetas):
@@ -689,9 +690,11 @@ def texto_anomalias(anomalias):
             destino += f" | buzón: {datos['buzon']}"
         lineas.append(f"  {lid}: {fechas} -> {destino}")
     for clave, titulo in (("dictamen_sin_estatus", "Leads con FECHA DICTAMEN pero sin ESTATUS DE NEGOCIO"),
-                          ("en_acumulados_sin_historial",
-                           "Leads en ACUMULADOS pero no en el historial (sin etiqueta de un asesor de "
-                           "secret.json, o fuera de los embudos)")):
+                          ("sin_fecha_dictamen", "Incompletos, no se usan en los reportes: sin FECHA DICTAMEN"),
+                          ("sin_estatus", "Incompletos, no se usan en los reportes: sin ESTATUS DE NEGOCIO"),
+                          ("sin_asesor", "Incompletos, no se usan en los reportes: sin etiqueta de un "
+                                         "asesor de secret.json"),
+                          ("no_encontrados", "Leads de ACUMULADOS no encontrados en Kommo")):
         ids = anomalias.get(clave) or []
         lineas.append(f"\n{titulo} ({len(ids)}):")
         if ids:
@@ -702,6 +705,7 @@ def texto_anomalias(anomalias):
 def guardar_anomalias(carpeta, anomalias):
     """Escribe leads_anomalos.txt (para leer) y leads_anomalos.json (para los reportes)."""
     carpeta = Path(carpeta)
+    carpeta.mkdir(parents=True, exist_ok=True)
     ahora = datetime.now()
     txt = f"Descarga del {ahora:%d/%m/%Y %H:%M}\n\n{texto_anomalias(anomalias)}\n"
     datos = {
@@ -713,7 +717,10 @@ def guardar_anomalias(carpeta, anomalias):
              "asignado": d["asignado"], "criterio": d.get("criterio"), "buzon": d.get("buzon")}
             for lid, d in (anomalias.get("varias_asesores") or {}).items()],
         "dictamen_sin_estatus": list(anomalias.get("dictamen_sin_estatus") or []),
-        "en_acumulados_sin_historial": list(anomalias.get("en_acumulados_sin_historial") or []),
+        "sin_fecha_dictamen": list(anomalias.get("sin_fecha_dictamen") or []),
+        "sin_estatus": list(anomalias.get("sin_estatus") or []),
+        "sin_asesor": list(anomalias.get("sin_asesor") or []),
+        "no_encontrados": list(anomalias.get("no_encontrados") or []),
     }
     try:
         # utf-8-sig: el Bloc de notas de Windows muestra bien los acentos
@@ -787,20 +794,28 @@ def main(salida=None, guardar_anomalias_junto=True):
     etapas, nombres = cargar_catalogo_etapas()
     embudos = resolver_embudos(nombres)
 
-    tarjetas = identificar_leads(etapas, embudos)
+    # Los leads a descargar son todos y únicamente los de ACUMULADOS
+    try:
+        ids = set(acum.leer_acumulados()["LEAD_ID"])
+    except (OSError, ValueError) as e:
+        sys.exit(f"No se pudo leer ACUMULADOS: {e}\nGenera primero los acumulados.")
+    if not ids:
+        sys.exit("ACUMULADOS no tiene leads.")
+    tarjetas, no_encontrados = cargar_leads(ids)
     if not tarjetas:
-        sys.exit("Ningún lead de los embudos tiene en sus etiquetas a un asesor de secret.json.")
-    print(f"Leads con etiqueta de un asesor: {len(tarjetas)}")
+        sys.exit("Kommo no devolvió ninguno de los leads de ACUMULADOS.")
+    print(f"Leads de ACUMULADOS: {len(ids)} | encontrados en Kommo: {len(tarjetas)}")
     asignar_buzones(tarjetas)
 
     _avisar(0.25, f"Descargando los movimientos de {len(tarjetas)} leads...")
     eventos = eventos_de_leads(tarjetas, ["lead_status_changed", "lead_added"], avance=(0.25, 0.85))
     filas = armar_filas(eventos, tarjetas, etapas, embudos, nombres)
     if not filas:
-        sys.exit("No hubo movimientos de esos leads en los embudos configurados.")
+        sys.exit("No se encontraron movimientos de los leads de ACUMULADOS.")
 
     anomalias = revisar_anomalias(tarjetas)
-    anomalias["en_acumulados_sin_historial"] = acumulados_sin_historial(tarjetas)
+    anomalias.update(incompletos(tarjetas))
+    anomalias["no_encontrados"] = no_encontrados
     if anomalias["varias_asesores"]:
         _avisar(0.87, "Revisando leads con varios asesores...")
         fechar_asesores(anomalias["varias_asesores"], tarjetas)
@@ -816,7 +831,7 @@ def main(salida=None, guardar_anomalias_junto=True):
           f"{df['LEAD_ID'].nunique()} leads | {time.time() - inicio:.1f}s")
     print(texto_anomalias(anomalias))
     if guardar_anomalias_junto:
-        guardar_anomalias(salida.parent, anomalias)
+        guardar_anomalias(fn.carpeta_anomalos(), anomalias)
     _avisar(1.0, "Descarga terminada")
     return salida
 
@@ -839,7 +854,7 @@ def descargar_historial(salida=None, al_avanzar=None):
         except SystemExit as e:        # main() termina con sys.exit("motivo")
             raise RuntimeError(str(e.code) if e.code else "La descarga se detuvo.") from None
         os.replace(temporal, salida)   # reemplaza por completo al anterior
-        guardar_anomalias(salida.parent, ULTIMAS_ANOMALIAS)
+        guardar_anomalias(fn.carpeta_anomalos(), ULTIMAS_ANOMALIAS)
         return salida
     finally:
         AL_AVANZAR = anterior

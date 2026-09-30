@@ -46,6 +46,25 @@ def carpeta_datos() -> Path:
 NOMBRE_HISTORIAL = "historial_etapas_kommo.xlsx"
 
 
+def ruta_configurada(clave, defecto) -> Path:
+    """Ruta de configuration.json -> settings.<clave>. Una ruta absoluta se usa
+    tal cual; una relativa (o el valor por defecto) se toma dentro de la carpeta
+    de datos del programa."""
+    settings = import_json(RUTA_CONFIGURACION)["settings"]
+    ruta = Path(str(settings.get(clave) or defecto)).expanduser()
+    return ruta if ruta.is_absolute() else carpeta_datos() / ruta
+
+
+def carpeta_base_acumulados() -> Path:
+    """Donde se descargan los archivos base de SharePoint (CARPETA_BASE_ACUMULADOS)."""
+    return ruta_configurada("CARPETA_BASE_ACUMULADOS", "tablas/base_acumulados")
+
+
+def carpeta_anomalos() -> Path:
+    """Donde se guardan leads_anomalos.txt / .json (CARPETA_ANOMALOS)."""
+    return ruta_configurada("CARPETA_ANOMALOS", "tablas")
+
+
 def carpeta_historial() -> Path:
     """Carpeta del historial: settings.CARPETA_HISTORIAL de configuration.json.
 
