@@ -580,6 +580,17 @@ def armar_filas(eventos, tarjetas, etapas, embudos, nombres_embudo):
     return filas
 
 
+def rango_acumulados():
+    """(inicio, fin) del periodo con que se generó ACUMULADOS (ACUMULADOS.info.json),
+    como fecha y hora local: desde las 00:00:00 de FECHA_DESDE hasta las 23:59:59
+    de FECHA_HASTA. None si ACUMULADOS no tiene su periodo anotado."""
+    info = acum.leer_info(acum.ruta_acumulados())
+    if not info:
+        return None
+    return (datetime.combine(info["fecha_desde"], datetime.min.time()),
+            datetime.combine(info["fecha_hasta"], datetime.max.time()))
+
+
 def aplicar_tarjetas(filas, tarjetas):
     """Agrega a cada renglón la fecha de creación y los campos de la tarjeta."""
     for fila in filas:
@@ -810,6 +821,17 @@ def main(salida=None, guardar_anomalias_junto=True):
     _avisar(0.25, f"Descargando los movimientos de {len(tarjetas)} leads...")
     eventos = eventos_de_leads(tarjetas, ["lead_status_changed", "lead_added"], avance=(0.25, 0.85))
     filas = armar_filas(eventos, tarjetas, etapas, embudos, nombres)
+    # Solo los movimientos dentro del periodo con que se generó ACUMULADOS: los
+    # posteriores al corte (o anteriores al inicio) se descartan.
+    rango = rango_acumulados()
+    if rango:
+        desde_acum, hasta_acum = rango
+        antes = len(filas)
+        filas = [f for f in filas if f["FECHA"] <= hasta_acum]
+        print(f"Movimientos fuera del periodo de ACUMULADOS ({desde_acum:%d/%m/%Y} al "
+                f"{hasta_acum:%d/%m/%Y}) descartados: {antes - len(filas)}")
+    else:
+        print("Aviso: ACUMULADOS no tiene anotado su periodo; no se descartaron movimientos por fecha.")
     if not filas:
         sys.exit("No se encontraron movimientos de los leads de ACUMULADOS.")
 
