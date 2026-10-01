@@ -10,12 +10,17 @@ Flujo en la ventana:
      genera ACUMULADOS con ese periodo (generar_acumulados.py). El periodo queda
      anotado junto a ACUMULADOS y es el que usan los reportes (carpeta, título y
      "Ventas del día"). Si algo falla, se detiene y lo explica.
-  3. Elegir la carpeta de reportes: quedan en <carpeta>/<FECHA_HASTA>/.
+  3. Elegir la carpeta de reportes. Cada paquete de reportes queda en
+     <carpeta>/<FECHA_HASTA>/GENERALES/<prefijo>reporte_general_...xlsx y
+     <carpeta>/<FECHA_HASTA>/INDIVIDUALES/<prefijo>/<prefijo>reporte_individual_...xlsx
   4. "Descargar historial": tarjetas y movimientos (en cualquier embudo) de
      todos y únicamente los leads de ACUMULADOS. Se guardan todos; los reportes
      solo usan los completos (con FECHA DICTAMEN, ESTATUS DE NEGOCIO y etiqueta
      de un asesor). Los incompletos se listan en leads_anomalos.txt.
-  5-7. (opcional) Estatus de negocio, descripción y prefijos.
+  5-6. (opcional) Estatus de negocio y descripción del reporte general.
+  7. Prefijo del paquete (obligatorio): identifica el paquete (p. ej.
+     "sin_restringido_" o "solo_restringido_") y nombra la subcarpeta de sus
+     reportes individuales. Generar con un prefijo ya usado reemplaza ese paquete.
   8. "Generar reportes".
 
 Rutas (configuration.json -> settings): CARPETA_BASE_ACUMULADOS,
@@ -42,8 +47,7 @@ import requests
 
 import acumulados as acum
 import functions as fn
-from general_report import (CARPETA_INDIVIDUALES, NOMBRE_ARCHIVO_GENERAL, PREFIJO_INDIVIDUAL,
-                            carpeta_del_dia, generar_reporte_general)
+from general_report import NOMBRE_ARCHIVO_GENERAL, PREFIJO_INDIVIDUAL, generar_reporte_general
 from individual_reports import (MESES, _nombre_archivo, aplicar_asignacion, cargar_asignaciones,
                                 generar_reporte_estado_leads, normalizar,
                                 normalizar_columnas_historial)
@@ -129,16 +133,28 @@ def filtrar_historial(df, estatus, rango_dictamen=None):   # rango_dictamen: ya 
     return df[df["LEAD_ID"].isin(leads)].copy()
 
 
-def validar_prefijo(texto):
-    """Texto para el inicio de un nombre de archivo.
+# Subcarpetas fijas dentro de <carpeta de reportes>/<fecha de corte>/
+CARPETA_GENERALES = "GENERALES"
+CARPETA_INDIVIDUALES_PAQUETE = "INDIVIDUALES"
+# Nombres que Windows no permite como carpeta o archivo
+NOMBRES_RESERVADOS = {"con", "prn", "aux", "nul",
+                      *(f"com{i}" for i in range(1, 10)), *(f"lpt{i}" for i in range(1, 10))}
 
-    Se quitan solo los espacios del inicio: un espacio al final se respeta,
-    porque puede servir de separador ("ENERO " -> "ENERO reporte_general...").
-    """
-    texto = (texto or "").lstrip()
+
+def validar_prefijo(texto):
+    """Prefijo de un paquete de reportes (obligatorio). Va al inicio del nombre
+    de cada reporte y es el nombre de la subcarpeta de sus reportes individuales,
+    así que debe ser un nombre de carpeta válido en Windows."""
+    texto = (texto or "").strip()
+    if not texto:
+        raise ValueError("Escribe un prefijo para los reportes (p. ej. sin_restringido_).")
     prohibidos = sorted(set(texto) & CARACTERES_PROHIBIDOS)
     if prohibidos:
         raise ValueError(f"Caracteres no permitidos en nombres de archivo: {' '.join(prohibidos)}")
+    if texto.endswith("."):
+        raise ValueError("El prefijo no puede terminar en punto; usa _ como separador.")
+    if texto.lower() in NOMBRES_RESERVADOS:
+        raise ValueError(f'"{texto}" es un nombre reservado de Windows; usa otro prefijo.')
     return texto
 
 
@@ -153,38 +169,39 @@ def ruta_historial():
     return fn.ruta_historial()
 
 
-def generar_reportes(df, secret, fecha, descripcion="", prefijo_individual="", prefijo_general="",
-                     carpeta_reportes=None, asignaciones=None):
+def carpetas_del_paquete(carpeta_reportes, fecha, prefijo):
+    """(carpeta del día, carpeta de individuales, carpeta de generales) de un paquete:
+    <carpeta>/<AAAA-MM-DD>/INDIVIDUALES/<prefijo>/ y <carpeta>/<AAAA-MM-DD>/GENERALES/."""
+    dia = Path(carpeta_reportes) / nombre_carpeta_reportes(fecha)
+    return dia, dia / CARPETA_INDIVIDUALES_PAQUETE / prefijo, dia / CARPETA_GENERALES
+
+
+def generar_reportes(df, secret, fecha, descripcion="", prefijo="", carpeta_reportes=None,
+                     asignaciones=None):
     """Reportes individuales de cada asesor + reporte general.
 
     fecha            : FECHA_HASTA; nombra la carpeta y los archivos.
-    carpeta_reportes : carpeta elegida en la ventana. Todos los reportes
-                       (individuales y general) quedan en
-                       <carpeta_reportes>/<AAAA-MM-DD>/. Si no se indica, se usan
-                       las carpetas de siempre dentro del proyecto
-                       (tablas/reportes/individuales|generales/<mes>/<día>).
-    Los prefijos se agregan al inicio del nombre de los reportes individuales
-    y del general (vacío = nombre normal).
+    prefijo          : obligatorio. Identifica el paquete de reportes: va al inicio
+                       del nombre de cada reporte y nombra la subcarpeta de sus
+                       individuales. Estructura:
+                         <carpeta_reportes>/<AAAA-MM-DD>/GENERALES/<prefijo>reporte_general_...
+                         <carpeta_reportes>/<AAAA-MM-DD>/INDIVIDUALES/<prefijo>/<prefijo>reporte_individual_...
+    carpeta_reportes : carpeta elegida en la ventana (si no se indica,
+                       tablas/reportes dentro de la carpeta de datos).
     asignaciones     : {LEAD_ID: asesor} de los leads con varios asesores (de
                        leads_anomalos.json); cada uno sale solo en el reporte
                        de su asesor. Si no se indica, se lee de CARPETA_ANOMALOS.
     Devuelve la ruta del reporte general.
     """
-    prefijo_individual = validar_prefijo(prefijo_individual)
-    prefijo_general = validar_prefijo(prefijo_general)
+    prefijo = validar_prefijo(prefijo)
+    _, carpeta_individuales, carpeta_general = carpetas_del_paquete(
+        carpeta_reportes or fn.ruta_configurada("CARPETA_REPORTES", "tablas/reportes"), fecha, prefijo)
 
-    if carpeta_reportes:
-        carpeta_dia = Path(carpeta_reportes) / nombre_carpeta_reportes(fecha)
-        carpeta_general = carpeta_dia
-    else:
-        carpeta_dia = carpeta_del_dia(fn.ruta_proyecto(CARPETA_INDIVIDUALES), fecha)
-        carpeta_general = None           # generar_reporte_general usa su carpeta de siempre
-
-    # El reporte general junta los reportes individuales de la carpeta del día
-    # que tienen este prefijo: se borran los de una corrida anterior con el
-    # mismo prefijo para no mezclar filtros (los de otros prefijos se quedan).
-    if carpeta_dia.is_dir():
-        for viejo in carpeta_dia.glob(f"{glob.escape(prefijo_individual)}{PREFIJO_INDIVIDUAL}*.xlsx"):
+    # El reporte general junta los reportes individuales de la subcarpeta del
+    # paquete: se borran los de una corrida anterior del mismo paquete para no
+    # mezclar filtros (los de otros prefijos están en otras subcarpetas).
+    if carpeta_individuales.is_dir():
+        for viejo in carpeta_individuales.glob(f"{glob.escape(prefijo)}{PREFIJO_INDIVIDUAL}*.xlsx"):
             viejo.unlink()   # PermissionError si está abierto en Excel
 
     if asignaciones is None:
@@ -199,7 +216,7 @@ def generar_reportes(df, secret, fecha, descripcion="", prefijo_individual="", p
             resultado = aplicar_asignacion(resultado, asesor, asignaciones)
             ruta = generar_reporte_estado_leads(
                 resultado, asesor=asesor, fecha_corte=fecha_corte,
-                ruta_salida=carpeta_dia / _nombre_archivo(asesor, prefijo_individual))
+                ruta_salida=carpeta_individuales / _nombre_archivo(asesor, prefijo))
             if ruta:
                 generados.append(ruta)
     finally:
@@ -208,10 +225,10 @@ def generar_reportes(df, secret, fecha, descripcion="", prefijo_individual="", p
     if not generados:
         raise ValueError("Ningún asesor tiene leads con los filtros elegidos; "
                          "no se generó el reporte general.")
-    return generar_reporte_general(fecha=fecha, carpeta_individuales=carpeta_dia,
+    return generar_reporte_general(fecha=fecha, carpeta_individuales=carpeta_individuales,
                                    carpeta_salida=carpeta_general,
-                                   descripcion=descripcion, prefijo=prefijo_general,
-                                   prefijo_individuales=prefijo_individual)
+                                   descripcion=descripcion, prefijo=prefijo,
+                                   prefijo_individuales=prefijo)
 
 
 # ---- Historial de etapas (en la carpeta del periodo) ------------------------
@@ -668,21 +685,17 @@ class App(tk.Tk):
         ttk.Entry(caja, textvariable=self.descripcion).pack(fill="x")
 
         # Texto al inicio de los nombres de archivo (vacío = nombre normal)
-        caja = ttk.LabelFrame(derecha, text="7. Texto al inicio del nombre de los archivos (opcional)",
-                              padding=8)
+        # Prefijo del paquete de reportes (obligatorio): va al inicio de cada
+        # nombre de archivo y nombra la subcarpeta de los individuales.
+        caja = ttk.LabelFrame(derecha, text="7. Prefijo de los reportes (obligatorio)", padding=8)
         caja.pack(fill="x", pady=(10, 0))
         caja.columnconfigure(1, weight=1)
-        self.prefijo_individual = tk.StringVar()
-        self.prefijo_general = tk.StringVar()
-        self.vista_individual = ttk.Label(caja, foreground="gray40", wraplength=440)
-        self.vista_general = ttk.Label(caja, foreground="gray40", wraplength=440)
-        for i, (texto, variable, vista) in enumerate([
-                ("Reportes individuales:", self.prefijo_individual, self.vista_individual),
-                ("Reporte general:", self.prefijo_general, self.vista_general)]):
-            ttk.Label(caja, text=texto).grid(row=i * 2, column=0, sticky="w", padx=(0, 8))
-            ttk.Entry(caja, textvariable=variable, width=10).grid(row=i * 2, column=1, sticky="ew")
-            vista.grid(row=i * 2 + 1, column=0, columnspan=2, sticky="w", pady=(0, 4))
-            variable.trace_add("write", lambda *_a: self._actualizar_nombres())
+        self.prefijo = tk.StringVar()
+        ttk.Label(caja, text="Prefijo:").grid(row=0, column=0, sticky="w", padx=(0, 8))
+        ttk.Entry(caja, textvariable=self.prefijo, width=10).grid(row=0, column=1, sticky="ew")
+        self.vista_prefijo = ttk.Label(caja, foreground="gray40", wraplength=440, justify="left")
+        self.vista_prefijo.grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        self.prefijo.trace_add("write", lambda *_a: self._al_cambiar_prefijo())
         self._actualizar_nombres()
 
         # Conteo y botón
@@ -710,8 +723,9 @@ class App(tk.Tk):
         fechas_mal = self.selector_desde.get() > self.selector_hasta.get()
         # El historial se descarga para los leads de ACUMULADOS: hace falta generarlos antes
         puede_descargar = not ocupado and not sin_acumulados
+        sin_prefijo = self._prefijo_valido() is None
         puede_generar = (not ocupado and not sin_carpeta and not sin_acumulados
-                         and self.historial is not None)
+                         and self.historial is not None and not sin_prefijo)
         self.boton_acumulados.state(["disabled"] if (ocupado or fechas_mal) else ["!disabled"])
         self.boton_descargar.state(["!disabled"] if puede_descargar else ["disabled"])
         self.boton.state(["!disabled"] if puede_generar else ["disabled"])
@@ -728,6 +742,8 @@ class App(tk.Tk):
             requisito = "Descarga el historial (paso 4) para poder generar reportes."
         elif sin_carpeta:
             requisito = "Elige la carpeta de reportes (paso 3) para poder generar reportes."
+        elif sin_prefijo:
+            requisito = "Escribe el prefijo de los reportes (paso 7) para poder generarlos."
         else:
             requisito = ""
         self.requisito.config(text=requisito)
@@ -1072,18 +1088,29 @@ class App(tk.Tk):
         df = self._leads_a_usar(self._estatus_elegidos())
         self.conteo.config(text=f"Leads que cumplen los filtros: {df['LEAD_ID'].nunique()}")
 
+    def _prefijo_valido(self):
+        """El prefijo escrito, si es válido; si no, None."""
+        try:
+            return validar_prefijo(self.prefijo.get())
+        except ValueError:
+            return None
+
+    def _al_cambiar_prefijo(self):
+        self._actualizar_nombres()
+        self._actualizar_estado()
+
     def _actualizar_nombres(self):
-        """Muestra cómo quedará el nombre de los archivos."""
-        nombres = (
-            (self.prefijo_individual, self.vista_individual, f"{PREFIJO_INDIVIDUAL}_<asesor>.xlsx"),
-            (self.prefijo_general, self.vista_general,
-             f"{NOMBRE_ARCHIVO_GENERAL}_{self.fecha:%Y-%m-%d}.xlsx"),
-        )
-        for variable, vista, nombre in nombres:
-            try:
-                vista.config(text=validar_prefijo(variable.get()) + nombre, foreground="gray40")
-            except ValueError as e:
-                vista.config(text=str(e), foreground="red")
+        """Muestra dónde y con qué nombre quedarán los reportes del paquete."""
+        try:
+            prefijo = validar_prefijo(self.prefijo.get())
+        except ValueError as e:
+            self.vista_prefijo.config(text=str(e), foreground="red")
+            return
+        fecha = nombre_carpeta_reportes(self.fecha)
+        self.vista_prefijo.config(
+            text=f"{fecha}/GENERALES/{prefijo}{NOMBRE_ARCHIVO_GENERAL}_{fecha}.xlsx\n"
+                 f"{fecha}/INDIVIDUALES/{prefijo}/{prefijo}{PREFIJO_INDIVIDUAL}_<asesor>.xlsx",
+            foreground="gray40")
 
     def _escribir(self, texto):
         _Consola(self).write(texto)
@@ -1116,10 +1143,11 @@ class App(tk.Tk):
                 print(f"Estatus: {', '.join(estatus)}")
                 print(f"Leads seleccionados: {df['LEAD_ID'].nunique()}\n")
                 ruta = generar_reportes(df, self.secret, self.fecha, self.descripcion.get().strip(),
-                                        self.prefijo_individual.get(), self.prefijo_general.get(),
-                                        carpeta_reportes=self.carpeta_reportes)
-            messagebox.showinfo("Listo", f"Reportes generados en:\n{ruta.parent}\n\n"
-                                         f"Reporte general:\n{ruta.name}")
+                                        self.prefijo.get(), carpeta_reportes=self.carpeta_reportes)
+            prefijo = validar_prefijo(self.prefijo.get())
+            messagebox.showinfo("Listo", f"Reportes generados en:\n{ruta.parent.parent}\n\n"
+                                         f"General: GENERALES/{ruta.name}\n"
+                                         f"Individuales: INDIVIDUALES/{prefijo}/")
         except PermissionError as e:
             messagebox.showerror("Archivo abierto",
                                  f"No se pudo reemplazar un archivo. Ciérralo en Excel e intenta de nuevo.\n\n{e}")
