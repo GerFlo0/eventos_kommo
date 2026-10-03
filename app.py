@@ -13,10 +13,17 @@ Flujo en la ventana:
   3. Elegir la carpeta de reportes. Cada paquete de reportes queda en
      <carpeta>/<FECHA_HASTA>/GENERALES/<prefijo>reporte_general_...xlsx y
      <carpeta>/<FECHA_HASTA>/INDIVIDUALES/<prefijo>/<prefijo>reporte_individual_...xlsx
-  4. "Descargar historial": tarjetas y movimientos (en cualquier embudo) de
+  4. "Descargar historial": tarjetas, etiquetas y movimientos (en cualquier embudo,
+     hasta el momento de la descarga) de
      todos y únicamente los leads de ACUMULADOS. Se guardan todos; los reportes
      solo usan los completos (con FECHA DICTAMEN, ESTATUS DE NEGOCIO y etiqueta
      de un asesor). Los incompletos se listan en leads_anomalos.txt.
+     Selector de eventos (no se guarda; siempre arranca en el primero):
+       - "Hasta el momento de ejecución": todos los eventos; el tiempo transcurrido
+         y los días en la última etapa se miden hasta ahora.
+       - "Solo hasta el corte": solo los eventos hasta FECHA_HASTA a las 23:59:59;
+         el tiempo se mide hasta ese momento y las etiquetas se evalúan al corte
+         (una etiqueta puesta después no cuenta; un lead sin asesor al corte no sale).
   5-6. (opcional) Estatus de negocio y descripción del reporte general.
   7. Prefijo del paquete (obligatorio): identifica el paquete (p. ej.
      "sin_restringido_" o "solo_restringido_") y nombra la subcarpeta de sus
@@ -176,8 +183,92 @@ def carpetas_del_paquete(carpeta_reportes, fecha, prefijo):
     return dia, dia / CARPETA_INDIVIDUALES_PAQUETE / prefijo, dia / CARPETA_GENERALES
 
 
+# Modos de eventos (selector del paso 4; no se guarda: siempre arranca en "ejecución")
+MODO_EJECUCION = "ejecucion"   # todos los eventos hasta el momento de ejecución (por defecto)
+MODO_CORTE = "corte"           # solo los eventos hasta FECHA_HASTA a las 23:59:59
+
+
+def fin_del_dia(fecha):
+    """FECHA_HASTA a las 23:59:59."""
+    return datetime.combine(fecha, datetime.max.time()).replace(microsecond=0)
+
+
+def cargar_etiquetas(carpeta):
+    """{LEAD_ID: {"asesores": {asesor: fecha de la etiqueta o None}, "buzon": nombre}}
+    de leads_anomalos.json ("etiquetas_asesores"). Sin datos: {}."""
+    try:
+        datos = json.loads((Path(carpeta) / "leads_anomalos.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    etiquetas = {}
+    for d in datos.get("etiquetas_asesores") or []:
+        etiquetas[int(d["lead"])] = {
+            "buzon": d.get("buzon"),
+            "asesores": {a["asesor"]: (datetime.fromisoformat(a["fecha_etiqueta"])
+                                       if a.get("fecha_etiqueta") else None)
+                         for a in d.get("asesores") or []}}
+    return etiquetas
+
+
+def permitidos_al_corte(etiquetas, corte):
+    """{LEAD_ID: asesores en cuyos reportes puede salir el lead}, evaluando las
+    etiquetas al corte: una etiqueta puesta después del corte no cuenta (una sin
+    fecha se considera anterior). Con un solo asesor al corte, sale solo con él;
+    con varios, se asigna como siempre (buzón, luego la etiqueta más reciente
+    al corte; en empate, con todos los de ese momento); sin ninguno, el lead no
+    tenía asesor al corte y no sale en ningún reporte."""
+    import extract_data_from_kommo as extractor     # misma regla del buzón que la descarga
+    permitidos = {}
+    for lid, d in etiquetas.items():
+        presentes = {a: f for a, f in d["asesores"].items() if f is None or f <= corte}
+        if len(presentes) <= 1:
+            permitidos[lid] = set(presentes)
+            continue
+        por_buzon = extractor.asesor_del_buzon(d.get("buzon"), list(presentes))
+        conocidas = {a: f for a, f in presentes.items() if f}
+        mas_reciente = max(conocidas.values(), default=None)
+        ganadores = [a for a, f in conocidas.items() if f == mas_reciente]
+        if por_buzon:
+            permitidos[lid] = {por_buzon}
+        elif len(ganadores) == 1:
+            permitidos[lid] = {ganadores[0]}
+        else:
+            permitidos[lid] = set(presentes)
+    return permitidos
+
+
+def aplicar_permitidos(historial, asesor, permitidos):
+    """Quita del historial de un asesor los leads que al corte no eran suyos."""
+    if not permitidos or historial is None or historial.empty:
+        return historial
+    clave = normalizar(asesor)
+    ajenos = {lid for lid, asesores in permitidos.items()
+              if clave not in {normalizar(a) for a in asesores}}
+    return historial[~historial["LEAD_ID"].isin(ajenos)]
+
+
+def aplicar_corte(df, corte):
+    """Solo los movimientos hasta el corte (incluido).
+
+    En el historial, ETIQUETAS viene solo en el último movimiento de cada lead;
+    si ese movimiento queda después del corte, las etiquetas pasan al último
+    movimiento que sí queda, para que la consulta de cada asesor siga
+    encontrando al lead."""
+    if df is None or corte is None:
+        return df
+    fechas = pd.to_datetime(df["FECHA"])
+    cortado = df[fechas <= corte].copy()
+    if "ETIQUETAS" in df.columns and not cortado.empty:
+        por_lead = df.dropna(subset=["ETIQUETAS"]).groupby("LEAD_ID")["ETIQUETAS"].last()
+        cortado["ETIQUETAS"] = None
+        orden = cortado.assign(_FECHA=pd.to_datetime(cortado["FECHA"])).sort_values(["LEAD_ID", "_FECHA"])
+        ultimos = orden.groupby("LEAD_ID").tail(1).index
+        cortado.loc[ultimos, "ETIQUETAS"] = cortado.loc[ultimos, "LEAD_ID"].map(por_lead).values
+    return cortado
+
+
 def generar_reportes(df, secret, fecha, descripcion="", prefijo="", carpeta_reportes=None,
-                     asignaciones=None):
+                     asignaciones=None, corte=None, etiquetas=None):
     """Reportes individuales de cada asesor + reporte general.
 
     fecha            : FECHA_HASTA; nombra la carpeta y los archivos.
@@ -188,6 +279,11 @@ def generar_reportes(df, secret, fecha, descripcion="", prefijo="", carpeta_repo
                          <carpeta_reportes>/<AAAA-MM-DD>/INDIVIDUALES/<prefijo>/<prefijo>reporte_individual_...
     carpeta_reportes : carpeta elegida en la ventana (si no se indica,
                        tablas/reportes dentro de la carpeta de datos).
+    corte            : None (modo por defecto) = todos los eventos hasta hoy, y el
+                       tiempo transcurrido se mide hasta el momento de ejecución.
+                       Fecha y hora (FECHA_HASTA 23:59:59) = solo los eventos hasta
+                       ese momento, el tiempo se mide hasta ahí y las etiquetas se
+                       evalúan al corte (etiquetas: de cargar_etiquetas).
     asignaciones     : {LEAD_ID: asesor} de los leads con varios asesores (de
                        leads_anomalos.json); cada uno sale solo en el reporte
                        de su asesor. Si no se indica, se lee de CARPETA_ANOMALOS.
@@ -206,14 +302,29 @@ def generar_reportes(df, secret, fecha, descripcion="", prefijo="", carpeta_repo
 
     if asignaciones is None:
         asignaciones = cargar_asignaciones(fn.carpeta_anomalos())
-    fecha_corte = datetime.now().replace(microsecond=0)  # misma para todos los reportes
+    permitidos = None
+    if corte is not None:
+        df = aplicar_corte(df, corte)
+        if etiquetas is None:
+            etiquetas = cargar_etiquetas(fn.carpeta_anomalos())
+        if etiquetas:
+            permitidos = permitidos_al_corte(etiquetas, corte)
+        else:
+            print("Aviso: el historial no tiene las fechas de las etiquetas; los leads con "
+                  "varios asesores se asignan como en el modo por defecto. Vuelve a descargarlo.")
+        fecha_corte = corte                      # referencia del tiempo transcurrido
+    else:
+        fecha_corte = datetime.now().replace(microsecond=0)  # misma para todos los reportes
     generados = []
     con = db.connect()
     con.register("df", df)   # la consulta de secret.json lee la tabla "df"
     try:
         for asesor in secret["asesores"]:
             resultado = con.execute(secret["query"], [f"%{asesor}%"]).df()
-            resultado = aplicar_asignacion(resultado, asesor, asignaciones)
+            if permitidos is not None:
+                resultado = aplicar_permitidos(resultado, asesor, permitidos)
+            else:
+                resultado = aplicar_asignacion(resultado, asesor, asignaciones)
             ruta = generar_reporte_estado_leads(
                 resultado, asesor=asesor, fecha_corte=fecha_corte,
                 ruta_salida=carpeta_individuales / _nombre_archivo(asesor, prefijo))
@@ -304,12 +415,24 @@ def universo(historial, acumulados, asesores=None):
     return df
 
 
-def acumulados_sin_historial(historial, acumulados):
-    """LEAD_IDs de ACUMULADOS que no están en el historial."""
+def acumulados_sin_historial(historial, acumulados, descartados=()):
+    """LEAD_IDs de ACUMULADOS que no están en el historial (sin contar los que la
+    descarga descartó a propósito por FECHA DICTAMEN posterior a FECHA_HASTA)."""
     if acumulados is None:
         return []
     en_historial = set(historial["LEAD_ID"]) if historial is not None else set()
-    return sorted(set(acumulados["LEAD_ID"]) - en_historial)
+    return sorted(set(acumulados["LEAD_ID"]) - en_historial - set(descartados))
+
+
+def cargar_descartados(carpeta):
+    """LEAD_IDs que la última descarga descartó por FECHA DICTAMEN posterior a
+    FECHA_HASTA (leads_anomalos.json)."""
+    try:
+        datos = json.loads((Path(carpeta) / "leads_anomalos.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return set()
+    bloque = datos.get("dictamen_posterior_al_corte") or {}
+    return {int(d["lead"]) for d in bloque.get("leads") or []}
 
 
 def cargar_acumulados():
@@ -577,6 +700,8 @@ class App(tk.Tk):
         self.sel_desde, self.sel_hasta = fecha_desde, fecha
         self.carpeta_reportes = carpeta_reportes
         self._fijar_acumulados(acumulados, info_acumulados, aviso_acumulados)
+        self.etiquetas = cargar_etiquetas(fn.carpeta_anomalos())   # fechas de etiqueta (modo corte)
+        self.descartados = cargar_descartados(fn.carpeta_anomalos())
         self._descargando = False
         self._generando_acumulados = False
         self._cola = None
@@ -656,6 +781,16 @@ class App(tk.Tk):
         self.boton_descargar.pack(side="left")
         self.etapa_descarga = ttk.Label(caja, foreground="gray40")
         self.etapa_descarga.pack(anchor="w")
+        # Qué eventos usan los reportes (no se guarda: siempre arranca en "ejecución")
+        ttk.Label(caja, text="Eventos a usar en los reportes (etapas, embudos y etiquetas):").pack(
+            anchor="w", pady=(6, 0))
+        self.modo_eventos = tk.StringVar(value=MODO_EJECUCION)
+        ttk.Radiobutton(caja, text="Hasta el momento de ejecución (por defecto)",
+                        variable=self.modo_eventos, value=MODO_EJECUCION,
+                        command=self._al_cambiar_modo).pack(anchor="w")
+        self.opcion_corte = ttk.Radiobutton(caja, variable=self.modo_eventos, value=MODO_CORTE,
+                                            command=self._al_cambiar_modo)
+        self.opcion_corte.pack(anchor="w")
 
         # Estatus de negocio (selección múltiple)
         caja = ttk.LabelFrame(derecha, text="5. Estatus de negocio a incluir (opcional)", padding=8)
@@ -785,7 +920,7 @@ class App(tk.Tk):
                 avisos.append("Las fechas elegidas no son las del ACUMULADOS generado; los reportes "
                               "usan las del ACUMULADOS. Vuelve a generar los acumulados para usar las nuevas.")
             if self.historial is not None:
-                faltan = acumulados_sin_historial(self.historial, self.acumulados)
+                faltan = acumulados_sin_historial(self.historial, self.acumulados, self.descartados)
                 if faltan:
                     avisos.append(f"{len(faltan)} leads de ACUMULADOS no están en el historial: "
                                   "vuelve a descargar el historial.")
@@ -1025,6 +1160,8 @@ class App(tk.Tk):
                 self._fallo_descarga(aviso or "No se pudo leer el historial descargado.")
             else:
                 self.historial = historial
+                self.etiquetas = cargar_etiquetas(fn.carpeta_anomalos())
+                self.descartados = cargar_descartados(fn.carpeta_anomalos())
                 guardar_info_historial(self._ruta_descarga, historial)
                 self._mostrado = 1.0
                 self._pintar_barra()
@@ -1076,10 +1213,26 @@ class App(tk.Tk):
     def _estatus_elegidos(self):
         return [self.lista.get(i) for i in self.lista.curselection()]
 
+    def _corte(self):
+        """FECHA_HASTA 23:59:59 en modo "hasta el corte"; None en el modo por defecto."""
+        return fin_del_dia(self.fecha) if self.modo_eventos.get() == MODO_CORTE else None
+
+    def _al_cambiar_modo(self):
+        self._actualizar_conteo()
+
     def _leads_a_usar(self, estatus):
-        """Leads de ACUMULADOS con los estatus elegidos."""
-        return filtrar_historial(universo(self.historial, self.acumulados,
-                                          self.secret.get("asesores")), estatus)
+        """Leads de ACUMULADOS con los estatus elegidos, según el modo de eventos:
+        en modo "hasta el corte", sin los movimientos posteriores ni los leads que
+        al corte no existían o no tenían asesor."""
+        df = filtrar_historial(universo(self.historial, self.acumulados,
+                                        self.secret.get("asesores")), estatus)
+        corte = self._corte()
+        if corte is not None and df is not None:
+            df = aplicar_corte(df, corte)
+            sin_asesor = {lid for lid, asesores in permitidos_al_corte(self.etiquetas, corte).items()
+                          if not asesores}
+            df = df[~df["LEAD_ID"].isin(sin_asesor)]
+        return df
 
     def _actualizar_conteo(self):
         if self.historial is None or self.acumulados is None:
@@ -1101,6 +1254,8 @@ class App(tk.Tk):
 
     def _actualizar_nombres(self):
         """Muestra dónde y con qué nombre quedarán los reportes del paquete."""
+        if hasattr(self, "opcion_corte"):
+            self.opcion_corte.config(text=f"Solo hasta el corte: {self.fecha:%d/%m/%Y} a las 23:59:59")
         try:
             prefijo = validar_prefijo(self.prefijo.get())
         except ValueError as e:
@@ -1134,16 +1289,20 @@ class App(tk.Tk):
         try:
             with contextlib.redirect_stdout(_Consola(self)):
                 df = self._leads_a_usar(estatus)
+                corte = self._corte()
+                print("Eventos: " + (f"hasta el corte, {corte:%d/%m/%Y %H:%M:%S}" if corte else
+                                     "hasta el momento de ejecución"))
                 print(f"ACUMULADOS: {len(self.acumulados)} leads, del {self.fecha_desde:%d/%m/%Y} "
                       f"al {self.fecha:%d/%m/%Y}")
-                faltan = acumulados_sin_historial(self.historial, self.acumulados)
+                faltan = acumulados_sin_historial(self.historial, self.acumulados, self.descartados)
                 if faltan:
                     print(f"Aviso: {len(faltan)} leads de ACUMULADOS no están en el historial: "
                           f"{', '.join(map(str, faltan))}")
                 print(f"Estatus: {', '.join(estatus)}")
                 print(f"Leads seleccionados: {df['LEAD_ID'].nunique()}\n")
                 ruta = generar_reportes(df, self.secret, self.fecha, self.descripcion.get().strip(),
-                                        self.prefijo.get(), carpeta_reportes=self.carpeta_reportes)
+                                        self.prefijo.get(), carpeta_reportes=self.carpeta_reportes,
+                                        corte=corte, etiquetas=self.etiquetas)
             prefijo = validar_prefijo(self.prefijo.get())
             messagebox.showinfo("Listo", f"Reportes generados en:\n{ruta.parent.parent}\n\n"
                                          f"General: GENERALES/{ruta.name}\n"

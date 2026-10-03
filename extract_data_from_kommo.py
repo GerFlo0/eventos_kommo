@@ -21,7 +21,9 @@ Qué se descarga (sin límite de fechas):
      datos incompletos): campos de secret.json -> campos_tarjeta (vacíos si no
      tienen dato; los de campos_dinero van con formato de dinero), etiquetas,
      fecha de creación y buzón.
-  2. Todos sus movimientos, en cualquier embudo. Los embudos de
+  2. Todos sus movimientos, en cualquier embudo, hasta el momento de la
+     descarga (el corte a FECHA_HASTA, si se elige, se aplica al generar los
+     reportes), y la fecha en que se puso la etiqueta de cada asesor. Los embudos de
      secret.json -> kommo -> PIPELINE_ID se muestran con su clave (VENTAS,
      CIERRES); los demás, con su nombre en Kommo. La creación es el primer renglón.
 
@@ -38,7 +40,9 @@ Además genera el reporte de leads anómalos en CARPETA_ANOMALOS:
       * con FECHA DICTAMEN pero sin ESTATUS DE NEGOCIO,
       * incompletos (no se usan en los reportes): sin FECHA DICTAMEN, sin
         ESTATUS DE NEGOCIO o sin etiqueta de un asesor,
-      * leads de ACUMULADOS no encontrados en Kommo.
+      * leads de ACUMULADOS no encontrados en Kommo,
+      * leads descartados por tener FECHA DICTAMEN posterior a FECHA_HASTA del
+        ACUMULADOS (no se guardan en el historial).
 
 Uso:
     python extract_data_from_kommo.py      # guarda en CARPETA_HISTORIAL
@@ -57,7 +61,7 @@ import sys
 import time
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from threading import Lock
 
@@ -580,17 +584,6 @@ def armar_filas(eventos, tarjetas, etapas, embudos, nombres_embudo):
     return filas
 
 
-def rango_acumulados():
-    """(inicio, fin) del periodo con que se generó ACUMULADOS (ACUMULADOS.info.json),
-    como fecha y hora local: desde las 00:00:00 de FECHA_DESDE hasta las 23:59:59
-    de FECHA_HASTA. None si ACUMULADOS no tiene su periodo anotado."""
-    info = acum.leer_info(acum.ruta_acumulados())
-    if not info:
-        return None
-    return (datetime.combine(info["fecha_desde"], datetime.min.time()),
-            datetime.combine(info["fecha_hasta"], datetime.max.time()))
-
-
 def aplicar_tarjetas(filas, tarjetas):
     """Agrega a cada renglón la fecha de creación y los campos de la tarjeta."""
     for fila in filas:
@@ -640,6 +633,35 @@ def revisar_anomalias(tarjetas):
     return {"varias_asesores": varias, "dictamen_sin_estatus": con_dictamen}
 
 
+# FECHA_HASTA del ACUMULADOS con que se revisó la última descarga (para el texto)
+ULTIMA_FECHA_HASTA = None
+
+
+def _a_fecha(valor):
+    """FECHA DICTAMEN (fecha, fecha y hora o texto) -> date, o None."""
+    if valor is None or (isinstance(valor, str) and not valor.strip()):
+        return None
+    if isinstance(valor, datetime):
+        return valor.date()
+    if isinstance(valor, date):
+        return valor
+    try:
+        return pd.to_datetime(str(valor), dayfirst=True).date()
+    except (ValueError, TypeError):
+        return None
+
+
+def dictamen_posterior(tarjetas, fecha_hasta):
+    """{LEAD_ID: FECHA DICTAMEN} de los leads cuya FECHA DICTAMEN es posterior al
+    día FECHA_HASTA (un dictamen de ese mismo día, a cualquier hora, sí entra)."""
+    posteriores = {}
+    for lid, t in tarjetas.items():
+        dictamen = _a_fecha(t["campos"].get(CAMPO_DICTAMEN))
+        if dictamen and dictamen > fecha_hasta:
+            posteriores[lid] = dictamen
+    return dict(sorted(posteriores.items()))
+
+
 def incompletos(tarjetas):
     """Leads que se guardan pero NO se usan en los reportes, por motivo (un
     lead puede tener varios): sin FECHA DICTAMEN, sin ESTATUS DE NEGOCIO, o
@@ -656,27 +678,44 @@ def incompletos(tarjetas):
     return grupos
 
 
-def fechar_asesores(varias, tarjetas):
-    """Fecha en que se puso la etiqueta de cada asesor (eventos 'etiqueta
-    agregada', sin límite de fechas) y asesor asignado:
-      1. el asesor que corresponde al BUZÓN del lead, si es uno de sus asesores;
-      2. si no, el de la etiqueta más reciente;
-      3. en empate, o si no hay fechas, no se asigna (cuenta para todos).
-    Una etiqueta sin evento se considera más antigua que las que sí lo tienen.
-    """
+# Fechas de etiqueta por lead y asesor de la última descarga (las usa la app
+# para evaluar las etiquetas al corte): {LEAD_ID: {"asesores": {asesor: fecha|None},
+# "buzon": nombre}}
+ULTIMAS_ETIQUETAS = {}
+
+
+def fechas_de_etiquetas(eventos, tarjetas):
+    """{LEAD_ID: {asesor: timestamp o None}}: la última vez que se puso la
+    etiqueta de cada asesor que el lead tiene HOY (eventos 'etiqueta agregada').
+    None = la etiqueta no tiene evento (se puso al crear el lead o antes de que
+    Kommo guardara el historial): se considera más antigua que cualquier otra."""
     ultima = {}                                    # (LEAD_ID, asesor) -> timestamp
-    for ev in eventos_de_leads(varias, ["entity_tag_added"]):
+    for ev in eventos:
+        if ev.get("type") != "entity_tag_added":
+            continue
         for item in ev.get("value_after") or []:
             nombre = ((item or {}).get("tag") or {}).get("name")
             for asesor in asesores_en_etiquetas([nombre] if nombre else []):
                 clave = (ev["entity_id"], asesor)
                 ultima[clave] = max(ultima.get(clave, 0), ev["created_at"])
+    return {lid: {a: ultima.get((lid, a)) for a in t["asesores"]}
+            for lid, t in tarjetas.items() if t["asesores"]}
+
+
+def fechar_asesores(varias, tarjetas, fechas):
+    """Fecha en que se puso la etiqueta de cada asesor (de fechas_de_etiquetas)
+    y asesor asignado:
+      1. el asesor que corresponde al BUZÓN del lead, si es uno de sus asesores;
+      2. si no, el de la etiqueta más reciente;
+      3. en empate, o si no hay fechas, no se asigna (cuenta para todos).
+    Una etiqueta sin evento se considera más antigua que las que sí lo tienen.
+    """
     for lid, datos in varias.items():
-        fechas = {a: ultima.get((lid, a)) for a in tarjetas[lid]["asesores"]}
-        conocidas = {a: f for a, f in fechas.items() if f}
+        fechas_lead = fechas.get(lid, {})
+        conocidas = {a: f for a, f in fechas_lead.items() if f}
         mas_reciente = max(conocidas.values(), default=None)
         ganadores = [a for a, f in conocidas.items() if f == mas_reciente]
-        datos["asesores"] = {a: _fecha(f) for a, f in fechas.items()}
+        datos["asesores"] = {a: _fecha(f) for a, f in fechas_lead.items()}
         datos["buzon"] = tarjetas[lid].get("buzon")
         por_buzon = asesor_del_buzon(datos["buzon"], tarjetas[lid]["asesores"])
         if por_buzon:
@@ -700,6 +739,12 @@ def texto_anomalias(anomalias):
         if datos.get("buzon"):
             destino += f" | buzón: {datos['buzon']}"
         lineas.append(f"  {lid}: {fechas} -> {destino}")
+    posteriores = anomalias.get("dictamen_posterior") or {}
+    corte = f" ({ULTIMA_FECHA_HASTA:%d/%m/%Y})" if ULTIMA_FECHA_HASTA else ""
+    lineas.append(f"\nLeads descartados (no están en el historial): FECHA DICTAMEN posterior a "
+                  f"FECHA_HASTA{corte} ({len(posteriores)}):")
+    for lid, dictamen in posteriores.items():
+        lineas.append(f"  {lid}: FECHA DICTAMEN {dictamen:%d/%m/%Y}")
     for clave, titulo in (("dictamen_sin_estatus", "Leads con FECHA DICTAMEN pero sin ESTATUS DE NEGOCIO"),
                           ("sin_fecha_dictamen", "Incompletos, no se usan en los reportes: sin FECHA DICTAMEN"),
                           ("sin_estatus", "Incompletos, no se usan en los reportes: sin ESTATUS DE NEGOCIO"),
@@ -713,8 +758,11 @@ def texto_anomalias(anomalias):
     return "\n".join(lineas)
 
 
-def guardar_anomalias(carpeta, anomalias):
-    """Escribe leads_anomalos.txt (para leer) y leads_anomalos.json (para los reportes)."""
+def guardar_anomalias(carpeta, anomalias, etiquetas=None):
+    """Escribe leads_anomalos.txt (para leer) y leads_anomalos.json (para los reportes).
+
+    etiquetas: ULTIMAS_ETIQUETAS; se guardan en el .json ("etiquetas_asesores")
+    para que la app evalúe las etiquetas al corte (modo "hasta FECHA_HASTA")."""
     carpeta = Path(carpeta)
     carpeta.mkdir(parents=True, exist_ok=True)
     ahora = datetime.now()
@@ -732,6 +780,15 @@ def guardar_anomalias(carpeta, anomalias):
         "sin_estatus": list(anomalias.get("sin_estatus") or []),
         "sin_asesor": list(anomalias.get("sin_asesor") or []),
         "no_encontrados": list(anomalias.get("no_encontrados") or []),
+        "dictamen_posterior_al_corte": {
+            "fecha_hasta": ULTIMA_FECHA_HASTA.isoformat() if ULTIMA_FECHA_HASTA else None,
+            "leads": [{"lead": lid, "fecha_dictamen": f.isoformat()}
+                      for lid, f in (anomalias.get("dictamen_posterior") or {}).items()]},
+        "etiquetas_asesores": [
+            {"lead": lid, "buzon": d.get("buzon"),
+             "asesores": [{"asesor": a, "fecha_etiqueta": f.isoformat() if f else None}
+                          for a, f in d["asesores"].items()]}
+            for lid, d in sorted((etiquetas or {}).items())],
     }
     try:
         # utf-8-sig: el Bloc de notas de Windows muestra bien los acentos
@@ -789,8 +846,8 @@ def escribir_excel(ruta, df, etiquetas):
 def main(salida=None, guardar_anomalias_junto=True):
     """Descarga todo y escribe el historial en `salida` (por defecto, la ruta
     de configuration.json -> CARPETA_HISTORIAL)."""
-    global ULTIMAS_ANOMALIAS
-    ULTIMAS_ANOMALIAS = {}
+    global ULTIMAS_ANOMALIAS, ULTIMAS_ETIQUETAS
+    ULTIMAS_ANOMALIAS, ULTIMAS_ETIQUETAS = {}, {}
     if not TOKEN:
         sys.exit("ERROR: falta el token de Kommo (variable de entorno "
                  "KOMMO_TOKEN o secret.json -> kommo -> TOKEN)")
@@ -818,30 +875,46 @@ def main(salida=None, guardar_anomalias_junto=True):
     print(f"Leads de ACUMULADOS: {len(ids)} | encontrados en Kommo: {len(tarjetas)}")
     asignar_buzones(tarjetas)
 
-    _avisar(0.25, f"Descargando los movimientos de {len(tarjetas)} leads...")
-    eventos = eventos_de_leads(tarjetas, ["lead_status_changed", "lead_added"], avance=(0.25, 0.85))
-    filas = armar_filas(eventos, tarjetas, etapas, embudos, nombres)
-    # Solo los movimientos dentro del periodo con que se generó ACUMULADOS: los
-    # posteriores al corte (o anteriores al inicio) se descartan.
-    rango = rango_acumulados()
-    if rango:
-        desde_acum, hasta_acum = rango
-        antes = len(filas)
-        filas = [f for f in filas if f["FECHA"] <= hasta_acum]
-        print(f"Movimientos fuera del periodo de ACUMULADOS ({desde_acum:%d/%m/%Y} al "
-                f"{hasta_acum:%d/%m/%Y}) descartados: {antes - len(filas)}")
+    # Seguridad: un lead con FECHA DICTAMEN posterior a FECHA_HASTA (del
+    # ACUMULADOS) se descarta completo y se documenta en leads_anomalos.txt.
+    global ULTIMA_FECHA_HASTA
+    info = acum.leer_info(acum.ruta_acumulados())
+    ULTIMA_FECHA_HASTA = info["fecha_hasta"] if info else None
+    posteriores = {}
+    if ULTIMA_FECHA_HASTA:
+        posteriores = dictamen_posterior(tarjetas, ULTIMA_FECHA_HASTA)
+        for lid in posteriores:
+            del tarjetas[lid]
+        if posteriores:
+            print(f"Leads descartados por FECHA DICTAMEN posterior a FECHA_HASTA "
+                  f"({ULTIMA_FECHA_HASTA:%d/%m/%Y}): {len(posteriores)}")
+        if not tarjetas:
+            sys.exit("Todos los leads de ACUMULADOS tienen FECHA DICTAMEN posterior a FECHA_HASTA.")
     else:
-        print("Aviso: ACUMULADOS no tiene anotado su periodo; no se descartaron movimientos por fecha.")
+        print("Aviso: ACUMULADOS no tiene anotado su periodo; no se revisó si la FECHA "
+              "DICTAMEN es posterior a FECHA_HASTA.")
+
+    _avisar(0.25, f"Descargando los movimientos de {len(tarjetas)} leads...")
+    # Cambios de etapa/embudo, alta del lead y etiquetas agregadas, hasta hoy: el
+    # corte (si se elige "hasta FECHA_HASTA") se aplica en la app al generar.
+    eventos = eventos_de_leads(tarjetas, ["lead_status_changed", "lead_added", "entity_tag_added"],
+                               avance=(0.25, 0.85))
+    filas = armar_filas(eventos, tarjetas, etapas, embudos, nombres)
     if not filas:
         sys.exit("No se encontraron movimientos de los leads de ACUMULADOS.")
 
     anomalias = revisar_anomalias(tarjetas)
     anomalias.update(incompletos(tarjetas))
     anomalias["no_encontrados"] = no_encontrados
+    anomalias["dictamen_posterior"] = posteriores
+    fechas = fechas_de_etiquetas(eventos, tarjetas)
     if anomalias["varias_asesores"]:
         _avisar(0.87, "Revisando leads con varios asesores...")
-        fechar_asesores(anomalias["varias_asesores"], tarjetas)
+        fechar_asesores(anomalias["varias_asesores"], tarjetas, fechas)
     ULTIMAS_ANOMALIAS = anomalias
+    ULTIMAS_ETIQUETAS = {lid: {"asesores": {a: _fecha(f) for a, f in por_asesor.items()},
+                               "buzon": tarjetas[lid].get("buzon")}
+                         for lid, por_asesor in fechas.items()}
 
     _avisar(0.92, "Armando el historial...")
     df = construir_df(aplicar_tarjetas(filas, tarjetas))
@@ -853,7 +926,7 @@ def main(salida=None, guardar_anomalias_junto=True):
           f"{df['LEAD_ID'].nunique()} leads | {time.time() - inicio:.1f}s")
     print(texto_anomalias(anomalias))
     if guardar_anomalias_junto:
-        guardar_anomalias(fn.carpeta_anomalos(), anomalias)
+        guardar_anomalias(fn.carpeta_anomalos(), anomalias, ULTIMAS_ETIQUETAS)
     _avisar(1.0, "Descarga terminada")
     return salida
 
@@ -876,7 +949,7 @@ def descargar_historial(salida=None, al_avanzar=None):
         except SystemExit as e:        # main() termina con sys.exit("motivo")
             raise RuntimeError(str(e.code) if e.code else "La descarga se detuvo.") from None
         os.replace(temporal, salida)   # reemplaza por completo al anterior
-        guardar_anomalias(fn.carpeta_anomalos(), ULTIMAS_ANOMALIAS)
+        guardar_anomalias(fn.carpeta_anomalos(), ULTIMAS_ANOMALIAS, ULTIMAS_ETIQUETAS)
         return salida
     finally:
         AL_AVANZAR = anterior
