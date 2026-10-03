@@ -3,8 +3,8 @@
 Programa para generar los reportes de efectividad de los asesores de cierres a partir de tres fuentes:
 
 1. **Base de acumulados** (SharePoint): con ella se genera el archivo ACUMULADOS del periodo, que define qué leads entran en los reportes.
-2. **Kommo**: de cada lead de ACUMULADOS se descarga su tarjeta y su historial completo de etapas.
-3. **Reglas de clasificación**: con ellas se arman un reporte individual por asesor y un reporte general (efectividad, monto otorgado, ventas del día y detalle).
+2. **Kommo**: de cada lead de ACUMULADOS se descarga su tarjeta y su historial de etapas hasta la fecha de corte.
+3. **Reglas de clasificación**: con ellas se arman paquetes de reportes, cada uno con un reporte individual por asesor y un reporte general (efectividad, monto otorgado, ventas del día y detalle).
 
 Todo se hace desde una ventana (`app.py`), que también se puede compilar como ejecutable para Windows.
 
@@ -23,7 +23,7 @@ cd eventos_kommo
 python setup_invironment.py
 ```
 
-`setup_invironment.py` crea el entorno virtual, instala las dependencias, crea las carpetas necesarias y la plantilla de `json/secret.json`. Opciones: `--recreate` vuelve a crear el entorno virtual; `--skip-install` no instala dependencias. Al terminar, indica cómo activar el entorno virtual.
+`setup_invironment.py` crea el entorno virtual, instala las dependencias y crea la plantilla de `json/secret.json`. Opciones: `--recreate` vuelve a crear el entorno virtual; `--skip-install` no instala dependencias. Al terminar, indica cómo activar el entorno virtual.
 
 La plantilla de `secret.json` trae valores de relleno (por ejemplo, los IDs de los embudos) que hay que reemplazar antes de usar el programa.
 
@@ -82,13 +82,13 @@ python app.py
 ```
 
 1. **Periodo:** elegir FECHA_DESDE y FECHA_HASTA con el calendario.
-2. **Generar acumulados:** descarga la base de SharePoint y genera ACUMULADOS con ese periodo. El periodo queda anotado en `ACUMULADOS.info.json` y es el que usan los reportes (carpeta, título y ventas del día). Si algo falla (sin internet, enlace vencido o que pide iniciar sesión, archivo abierto), se detiene, lo explica y no deja archivos a medias.
-3. **Carpeta de reportes:** los reportes quedan en `<carpeta>/<FECHA_HASTA como AAAA-MM-DD>/`.
-4. **Descargar historial:** trae de Kommo la tarjeta y todos los movimientos (en cualquier embudo) de todos y únicamente los leads de ACUMULADOS. Se guardan todos, aunque estén incompletos. La descarga reemplaza al historial anterior solo si termina bien.
+2. **Generar acumulados:** descarga la base de SharePoint y genera ACUMULADOS con ese periodo. El periodo queda anotado en `ACUMULADOS.info.json`, y los reportes y el historial lo usan (fecha de corte, carpeta, título y ventas del día). Si algo falla (sin internet, enlace vencido o que pide iniciar sesión, archivo abierto), se detiene, lo explica y no deja archivos a medias.
+3. **Carpeta de reportes:** donde se guardan los paquetes de reportes (ver "Archivos generados").
+4. **Descargar historial:** trae de Kommo la tarjeta y los movimientos (en cualquier embudo, hasta la fecha de corte de ACUMULADOS) de todos y únicamente los leads de ACUMULADOS. Se guardan todos, aunque estén incompletos. La descarga reemplaza al historial anterior solo si termina bien.
 5. **(Opcional) Estatus de negocio** a incluir.
 6. **(Opcional) Descripción** para el título del reporte general.
-7. **(Opcional) Texto al inicio del nombre** de los reportes individuales y del general.
-8. **Generar reportes.**
+7. **Prefijo (obligatorio):** identifica el paquete de reportes (por ejemplo, `sin_restringido_` o `solo_restringido_`). Va al inicio del nombre de cada reporte y nombra la subcarpeta de sus reportes individuales. Se quitan los espacios de los extremos. No puede contener `< > : " / \ | ? *`, terminar en punto ni ser un nombre reservado de Windows (CON, NUL, COM1...). Se recomienda usar `_` como separador.
+8. **Generar reportes.** Si ya existía un paquete con el mismo prefijo en esa fecha, se reemplaza; los demás paquetes no se tocan.
 
 ### Uso por consola
 
@@ -96,14 +96,16 @@ python app.py
 python descargar_base_acumulados.py                               # descarga la base de SharePoint
 python generar_acumulados.py --desde 01/09/2026 --hasta 29/09/2026
 python extract_data_from_kommo.py                                 # historial de los leads de ACUMULADOS
-python general_report.py --help                                   # --fecha, --descripcion, --prefijo, ...
+python general_report.py --help                                   # --fecha, --carpeta, --salida, --prefijo, ...
 ```
 
 ## Reglas de los reportes
 
 **Leads que se usan:** los de ACUMULADOS que están completos, es decir, con FECHA DICTAMEN, ESTATUS DE NEGOCIO (de los elegidos) y la etiqueta de un asesor de `secret.json`. Los incompletos se listan en `leads_anomalos.txt`.
 
-**Categorías**, según la etapa actual del lead (sin importar mayúsculas ni acentos):
+**Fecha de corte:** los movimientos de Kommo posteriores a la FECHA_HASTA de ACUMULADOS se descartan, así que la etapa de cada lead es la que tenía al cierre del periodo. Los datos de la tarjeta (estatus, fecha de dictamen, monto, motivo, etiquetas, buzón) son los actuales, porque Kommo no guarda su historia.
+
+**Categorías**, según la etapa del lead (sin importar mayúsculas ni acentos):
 
 | Categoría | Etapas |
 |---|---|
@@ -126,16 +128,40 @@ python general_report.py --help                                   # --fecha, --d
 
 ## Archivos generados
 
+**Archivos del proceso** (en las rutas de `configuration.json`):
+
 | Archivo | Contenido |
 |---|---|
 | `<CARPETA_BASE_ACUMULADOS>/<nombre>.xlsx` | Archivos base descargados de SharePoint. |
 | `ACUMULADOS.xlsx` y `ACUMULADOS.info.json` | Hojas ACUMULADO CONTACTACION y ACUMULADO IA; periodo con que se generaron. |
 | `historial_etapas_kommo.xlsx` y su `.info.json` | Hoja HISTORIAL: LEAD, EMBUDO, CREACION, ESTATUS DE NEGOCIO, FECHA DICTAMEN, MONTO OTORGADO, MOTIVO LEAD PERDIDO, ETIQUETAS, ETAPA ANTERIOR, ETAPA NUEVA, FECHA EVENTO, DIAS ETAPA ANTERIOR, BUZON. Hoja PIVOTE: un renglón por lead, con la primera fecha en cada "EMBUDO - ETAPA", EMBUDO ACTUAL y CAMBIOS DE EMBUDO. |
 | `leads_anomalos.txt` / `.json` | Leads con varios asesores (fechas de etiquetas y asignación), con FECHA DICTAMEN pero sin ESTATUS, incompletos por motivo, y leads de ACUMULADOS no encontrados en Kommo. |
-| `<carpeta>/<AAAA-MM-DD>/reporte_individual_dictaminados_<asesor>.xlsx` | Resumen, Estado actual (con ruta del lead, buzón, origen y fecha de otorgado) e Historial por lead. |
-| `<carpeta>/<AAAA-MM-DD>/reporte_general_dictaminados_<AAAA-MM-DD>.xlsx` | Efectividad, Monto otorgado, Ventas del día y Detalle completo. |
 
-Si se escribió un texto de inicio en la ventana, va antes del nombre de los reportes.
+**Paquetes de reportes** (en la carpeta de reportes elegida), uno por prefijo:
+
+```
+<carpeta de reportes>/<FECHA_HASTA como AAAA-MM-DD>/
+    GENERALES/
+        <prefijo>reporte_general_dictaminados_<AAAA-MM-DD>.xlsx
+    INDIVIDUALES/
+        <prefijo>/
+            <prefijo>reporte_individual_dictaminados_<asesor>.xlsx
+```
+
+Ejemplo con dos paquetes del mismo corte:
+
+```
+2026-09-30/
+    GENERALES/
+        solo_restringido_reporte_general_dictaminados_2026-09-30.xlsx
+        sin_restringido_reporte_general_dictaminados_2026-09-30.xlsx
+    INDIVIDUALES/
+        solo_restringido_/   (un reporte por asesor)
+        sin_restringido_/    (un reporte por asesor)
+```
+
+* **Reporte individual:** Resumen, Estado actual (con ruta del lead, buzón, origen y fecha de otorgado) e Historial por lead.
+* **Reporte general:** Efectividad, Monto otorgado, Ventas del día y Detalle completo. Cada reporte general solo cuenta los reportes individuales de su paquete.
 
 ## Compilar el ejecutable
 
